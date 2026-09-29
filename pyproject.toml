@@ -1,6 +1,6 @@
 [project]
 name = "bidmaster-pro"
-version = "0.1.0"
+version = "2.0.1"
 description = "BidMaster Pro - 全流程智能招投标平台"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -26,6 +26,7 @@ dependencies = [
     "mammoth>=1.8",
     "chardet>=5.0",
     "beautifulsoup4>=4.12",
+    "feedparser>=6.0",
     "celery[redis]>=5.3",
     "redis>=5.0",
     "minio>=7.2",

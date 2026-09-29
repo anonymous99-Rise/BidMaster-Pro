@@ -534,7 +534,7 @@ export const newsApi = {
     company_profile?: Record<string, unknown>;
     is_hot_threshold?: number;
     persist?: boolean;
-  }) => api.post<AggregateResponse>('/news/aggregate', payload),
+  }) => api.post<AggregateResponse>('/news/aggregate', payload, { timeout: 600000 }),
   listHotspots: (params?: {
     industry_code?: string;
     region?: string;
