@@ -153,7 +153,7 @@ services:
 
   # ─────────────── MinIO 对象存储（--profile infra 启用）───────────────
   minio:
-    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/minio/minio:latest
+    image: ${MINIO_REGISTRY:-docker.1panel.live}/minio/minio:latest
     restart: unless-stopped
     profiles: ["infra"]
     command: server /data --console-address ":9001"
@@ -175,7 +175,7 @@ services:
 
   # MinIO 初始化：创建 bucket（仅首次运行，--profile infra 启用）
   minio-init:
-    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/minio/mc:latest
+    image: ${MINIO_REGISTRY:-docker.1panel.live}/minio/mc:latest
     profiles: ["infra"]
     depends_on:
       minio:
