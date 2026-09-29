@@ -5,13 +5,14 @@
 # enabled: 是否启用,管理员可在 UI 修改
 
 government_procurement:
+  # 以下 ccgp 三个源 2026-09 实测: 站点无 RSS 且整站反爬(403), 禁用
   - name: "中国政府采购网-中央公告"
     code: "ccgp_central"
     type: "rss"
     url: "http://www.ccgp.gov.cn/cggg/dfgg/rss.xml"
     industry: "04"
     weight: 1.0
-    enabled: true
+    enabled: false
     description: "中央国家机关政府采购公告"
   - name: "中国政府采购网-地方公告"
     code: "ccgp_local"
@@ -19,7 +20,7 @@ government_procurement:
     url: "http://www.ccgp.gov.cn/cggg/dfgg/rss_local.xml"
     industry: "04"
     weight: 0.9
-    enabled: true
+    enabled: false
     description: "地方各级政府采购公告"
   - name: "中国政府采购网-变更公告"
     code: "ccgp_change"
@@ -27,17 +28,19 @@ government_procurement:
     url: "http://www.ccgp.gov.cn/cggg/dfgg/rss_change.xml"
     industry: "04"
     weight: 0.8
-    enabled: true
+    enabled: false
     description: "采购公告变更/更正信息"
 
 engineering:
+  # ggzy_* 系列 2026-09 实测: 各省公共资源交易平台均不提供 RSS
+  # (404/域名不存在/连接拒绝/超时), 全部禁用, 后续改用列表页爬取方案
   - name: "全国公共资源交易平台"
     code: "ggzy_national"
     type: "rss"
     url: "https://www.ggzy.gov.cn/rss.xml"
     industry: "01"
     weight: 1.0
-    enabled: true
+    enabled: false
     description: "国家级公共资源交易信息"
   - name: "北京市公共资源交易服务平台"
     code: "ggzy_bj"
@@ -45,51 +48,52 @@ engineering:
     url: "https://www.bjggzy.com/rss"
     industry: "01"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "上海市公共资源交易中心"
     code: "ggzy_sh"
     type: "rss"
     url: "https://www.sggzy.com/rss"
     industry: "01"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "广东省公共资源交易中心"
     code: "ggzy_gd"
     type: "rss"
     url: "https://www.gdggzy.com/rss"
     industry: "01"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "江苏省公共资源交易平台"
     code: "ggzy_js"
     type: "rss"
     url: "https://www.jszwfw.gov.cn/rss"
     industry: "01"
     weight: 0.85
-    enabled: true
+    enabled: false
   - name: "浙江省公共资源交易中心"
     code: "ggzy_zj"
     type: "rss"
     url: "https://www.ggzy.zj.gov.cn/rss"
     industry: "01"
     weight: 0.85
-    enabled: true
+    enabled: false
   - name: "山东省公共资源交易中心"
     code: "ggzy_sd"
     type: "rss"
     url: "https://www.sdggzyjy.gov.cn/rss"
     industry: "01"
     weight: 0.8
-    enabled: true
+    enabled: false
 
 tender_service:
+  # 2026-09 实测: /rss.xml 不存在(404), 禁用
   - name: "中国招标投标公共服务平台"
     code: "cebpubservice"
     type: "rss"
     url: "https://www.cebpubservice.com/rss.xml"
     industry: "01"
     weight: 1.0
-    enabled: true
+    enabled: false
     description: "国家级招标投标信息公共服务"
   - name: "比比招标采购网"
     code: "ebidding"
@@ -114,20 +118,21 @@ tender_service:
     enabled: true
 
 enterprise_tender:
+  # 2026-09 实测: chinamobile 旧版 SSL 协商被拒, chinaunicom 连接被对端重置(WAF), 禁用
   - name: "中国移动采购与招标网"
     code: "chinamobile"
     type: "rss"
     url: "https://b2b.10086.cn/b2b/main/rss.html"
     industry: "10"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "中国联通采购与招标网"
     code: "chinaunicom"
     type: "rss"
     url: "https://www.chinaunicom.com.cn/news/rss"
     industry: "10"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "中国电信采购平台"
     code: "chinatelecom"
     type: "crawl"
