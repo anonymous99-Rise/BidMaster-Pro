@@ -253,11 +253,154 @@ class APIFetcher(BaseFetcher):
 
 
 class HTMLFetcher(BaseFetcher):
-    """HTML 抓取器 (预留扩展,默认走 NewsCrawlerSkill)"""
+    """HTML 列表页抓取器 (crawl 类型)
+
+    政府招标站点普遍无 RSS 且搜索接口反爬,但公告列表页可直接访问
+    (2026-09 实测 ccgp.gov.cn 列表页 200)。通用解析:
+    提取 <a href> + 标题(含中文或日期) → 逐条抓详情页正文。
+    """
+
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+
+    RE_ANCHOR = None
+    RE_HREF = None
+    RE_TITLE_ATTR = None
+    RE_TAG = None
+    RE_WS = None
+    RE_DATE = None
+
+    def __init__(self, timeout: int = 20):
+        self.timeout = timeout
+        import re as _re
+        if HTMLFetcher.RE_ANCHOR is None:
+            HTMLFetcher.RE_ANCHOR = _re.compile(r'<a\s([^>]*)>(.*?)</a>', _re.DOTALL)
+            HTMLFetcher.RE_HREF = _re.compile(r'href=["\']([^"\']+)["\']')
+            HTMLFetcher.RE_TITLE_ATTR = _re.compile(r'title=["\']([^"\']+)["\']')
+            HTMLFetcher.RE_TAG = _re.compile(r'<[^>]+>')
+            HTMLFetcher.RE_WS = _re.compile(r'\s+')
+            HTMLFetcher.RE_DATE = _re.compile(r'(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})[日号]?')
+
+    def _headers(self) -> dict:
+        import random
+        return {
+            "User-Agent": random.choice(self.USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+        }
+
+    async def _get(self, url: str) -> str | None:
+        import httpx
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True, headers=self._headers(),
+            ) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.text
+        except Exception:
+            return None
 
     async def fetch(self, source_config: dict) -> List[NewsItem]:
-        # HTML 抓取维持原有 NewsCrawlerSkill 流程,这里不重复实现
-        return []
+        url = source_config.get("url", "")
+        if not url:
+            return []
+        cfg = source_config.get("config") or {}
+        max_items = int(cfg.get("max_items", 12))
+
+        html = await self._get(url)
+        if not html:
+            raise FetchError(f"HTML 抓取失败: {url}")
+
+        entries = self._parse_list_page(html, url)[:max_items]
+        items: List[NewsItem] = []
+        for e in entries:
+            content = await self._get(e["url"]) if e["url"] else None
+            text = self._extract_content(content) if content else ""
+            items.append(NewsItem(
+                title=e["title"],
+                url=e["url"],
+                source=source_config.get("name", ""),
+                pub_date=e.get("pub_date", ""),
+                content=text[:5000],
+                source_code=source_config.get("code", ""),
+                industry_code=source_config.get("industry", ""),
+                extra={"fetch_type": "crawl"},
+            ))
+        return items
+
+    def _parse_list_page(self, html: str, base_url: str) -> List[dict]:
+        from urllib.parse import urljoin
+
+        items: List[dict] = []
+        seen = set()
+        for attrs, inner in self.RE_ANCHOR.findall(html):
+            # 标题优先取 title 属性(如新疆平台 title=公告名, 内嵌 span 装饰文本)
+            hm = self.RE_HREF.search(attrs)
+            if not hm:
+                continue
+            href = hm.group(1)
+            tm = self.RE_TITLE_ATTR.search(attrs)
+            title = (tm.group(1).strip() if tm else "") or self.RE_TAG.sub('', inner).strip()
+            if len(title) < 10 or len(title) > 200:
+                continue
+            # 只保留含中文的链接(过滤导航/英文页脚)
+            if not any('一' <= ch <= '鿿' for ch in title):
+                continue
+            full_url = urljoin(base_url, href.strip())
+            if not full_url.startswith("http"):
+                continue
+            # 公告详情一般是 .htm/.html 静态页,过滤栏目页/锚点
+            if not any(full_url.split("?")[0].endswith(ext) for ext in (".htm", ".html", ".shtml")):
+                continue
+            if full_url in seen:
+                continue
+            seen.add(full_url)
+
+            pub_date = ""
+            m = self.RE_DATE.search(title) or self.RE_DATE.search(href)
+            if m:
+                pub_date = f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
+
+            items.append({"title": title[:150], "url": full_url, "pub_date": pub_date})
+        return items
+
+    _CONTENT_PATTERNS = None
+
+    def _content_patterns(self):
+        import re as _re
+        if HTMLFetcher._CONTENT_PATTERNS is None:
+            HTMLFetcher._CONTENT_PATTERNS = [
+                _re.compile(p, _re.DOTALL | _re.IGNORECASE) for p in (
+                    r'<article[^>]*>(.*?)</article>',
+                    r'<div[^>]*class="[^"]*content[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*id="[^"]*content[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*class="[^"]*detail[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*class="[^"]*news[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*class="[^"]*TRS_Editor[^"]*"[^>]*>(.*?)</div>',
+                    r'<div[^>]*class="[^"]*text[^"]*"[^>]*>(.*?)</div>',
+                )
+            ]
+        return HTMLFetcher._CONTENT_PATTERNS
+
+    def _extract_content(self, html: str) -> str:
+        for pattern in self._content_patterns():
+            matches = pattern.findall(html)
+            if matches:
+                longest = max(matches, key=len)
+                text = self.RE_TAG.sub('', longest)
+                text = self.RE_WS.sub(' ', text).strip()
+                if len(text) > 100:
+                    return text[:8000]
+        text = self.RE_TAG.sub('', html)
+        return self.RE_WS.sub(' ', text).strip()[:5000]
 
 
 class BrowserFetcher(BaseFetcher):

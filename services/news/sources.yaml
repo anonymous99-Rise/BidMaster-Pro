@@ -5,23 +5,24 @@
 # enabled: 是否启用,管理员可在 UI 修改
 
 government_procurement:
-  # 以下 ccgp 三个源 2026-09 实测: 站点无 RSS 且整站反爬(403), 禁用
+  # 2026-09-30 实测: ccgp 无 RSS 且搜索接口 403, 但公告列表页可直接访问(200),
+  # 改用 crawl 方案抓列表页+详情; 地方公告覆盖全国各省项目
   - name: "中国政府采购网-中央公告"
     code: "ccgp_central"
-    type: "rss"
-    url: "http://www.ccgp.gov.cn/cggg/dfgg/rss.xml"
+    type: "crawl"
+    url: "http://www.ccgp.gov.cn/cggg/zygg/"
     industry: "04"
     weight: 1.0
-    enabled: false
-    description: "中央国家机关政府采购公告"
+    enabled: true
+    description: "中央国家机关政府采购公告(全国性项目)"
   - name: "中国政府采购网-地方公告"
     code: "ccgp_local"
-    type: "rss"
-    url: "http://www.ccgp.gov.cn/cggg/dfgg/rss_local.xml"
+    type: "crawl"
+    url: "http://www.ccgp.gov.cn/cggg/dfgg/"
     industry: "04"
-    weight: 0.9
-    enabled: false
-    description: "地方各级政府采购公告"
+    weight: 1.0
+    enabled: true
+    description: "地方各级政府采购公告(覆盖全国各省)"
   - name: "中国政府采购网-变更公告"
     code: "ccgp_change"
     type: "rss"
@@ -32,14 +33,30 @@ government_procurement:
     description: "采购公告变更/更正信息"
 
 engineering:
-  # ggzy_* 系列 2026-09 实测: 各省公共资源交易平台均不提供 RSS
-  # (404/域名不存在/连接拒绝/超时), 全部禁用, 后续改用列表页爬取方案
+  # 2026-09-30 实测: 省级公共资源交易平台无 RSS, 改用 crawl 抓列表页
+  - name: "宁夏回族自治区公共资源交易网"
+    code: "ggzy_ningxia"
+    type: "crawl"
+    url: "https://ggzyjy.fzggw.nx.gov.cn/"
+    industry: "01"
+    weight: 1.0
+    enabled: true
+    description: "宁夏公共资源交易公告(重点区域)"
+  - name: "新疆维吾尔自治区公共资源交易平台"
+    code: "ggzy_xinjiang"
+    type: "crawl"
+    url: "https://ggzy.xinjiang.gov.cn/"
+    industry: "01"
+    weight: 1.0
+    enabled: true
+    description: "新疆公共资源交易公告(重点区域)"
   - name: "全国公共资源交易平台"
     code: "ggzy_national"
     type: "rss"
     url: "https://www.ggzy.gov.cn/rss.xml"
     industry: "01"
     weight: 1.0
+    # 2026-09 实测: 无 RSS; deal.ggzy.gov.cn 搜索接口从服务器不可达
     enabled: false
     description: "国家级公共资源交易信息"
   - name: "北京市公共资源交易服务平台"
@@ -169,7 +186,8 @@ github_monitor:
     url: "https://api.github.com/search/repositories"
     industry: "00"
     weight: 0.5
-    enabled: true
+    # 2026-09-30: 返回全英文仓库内容, 与"真实招标信息"需求不符, 禁用
+    enabled: false
     config:
       languages: ["python", "typescript"]
       topics: ["tender", "bidding", "procurement"]
@@ -182,6 +200,7 @@ github_monitor:
 # 行业代码 12 = 综合 (IndustryClassifySkill 会根据关键词二次归类)
 # ============================================================
 general_news:
+  # 2026-09-30: 资讯中心定位以真实中文招标信息为主, 英文源全量禁用
   # 中文 AI 媒体 (来自 ai-content-publisher)
   - name: "机器之心"
     code: "jiqizhixin"
@@ -205,7 +224,8 @@ general_news:
     url: "https://www.aiust.com/rss"
     industry: "12"
     weight: 0.9
-    enabled: true
+    # 2026-09-29 实测 404, 暂禁用
+    enabled: false
     description: "AI 与产业资讯"
   - name: "AI科技评论"
     code: "aitechreview"
@@ -223,7 +243,8 @@ general_news:
     url: "https://www.zhipuai.cn/blog/rss"
     industry: "12"
     weight: 1.0
-    enabled: true
+    # 2026-09-29 实测 404
+    enabled: false
   - name: "月之暗面(Kimi)"
     code: "moonshot_blog"
     type: "rss"
@@ -237,7 +258,8 @@ general_news:
     url: "https://www.baichuan-ai.com/blog/rss"
     industry: "12"
     weight: 0.9
-    enabled: true
+    # 2026-09-29 实测 404
+    enabled: false
   - name: "阶跃星辰"
     code: "stepfun_blog"
     type: "rss"
@@ -246,58 +268,58 @@ general_news:
     weight: 0.9
     enabled: true
 
-  # 国外 AI 公司 (来自 ai-content-publisher)
+  # 国外 AI 公司 (来自 ai-content-publisher) — 英文源, 禁用
   - name: "OpenAI Blog"
     code: "openai_blog"
     type: "rss"
     url: "https://openai.com/blog/rss.xml"
     industry: "12"
     weight: 1.0
-    enabled: true
+    enabled: false
   - name: "Cohere Blog"
     code: "cohere_blog"
     type: "rss"
     url: "https://cohere.com/blog/rss"
     industry: "12"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "Hugging Face Blog"
     code: "hf_blog"
     type: "rss"
     url: "https://huggingface.co/blog/feed.xml"
     industry: "12"
     weight: 1.0
-    enabled: true
+    enabled: false
 
-  # 科技媒体 (来自 ai-content-publisher, 启用可用的)
+  # 科技媒体 (来自 ai-content-publisher) — 英文源, 禁用
   - name: "MIT Technology Review"
     code: "mit_techreview"
     type: "rss"
     url: "https://www.technologyreview.com/feed/"
     industry: "12"
     weight: 0.8
-    enabled: true
+    enabled: false
   - name: "TechCrunch AI"
     code: "techcrunch_ai"
     type: "rss"
     url: "https://techcrunch.com/category/artificial-intelligence/feed/"
     industry: "12"
     weight: 0.6
-    enabled: true
+    enabled: false
   - name: "The Batch (DeepLearning.AI)"
     code: "thebatch"
     type: "rss"
     url: "https://www.deeplearning.ai/the-batch/feed/"
     industry: "12"
     weight: 0.9
-    enabled: true
+    enabled: false
   - name: "Towards Data Science"
     code: "tds"
     type: "rss"
     url: "https://towardsdatascience.com/feed"
     industry: "12"
     weight: 1.0
-    enabled: true
+    enabled: false
 
   # 通用新闻列表页 (借鉴 AIMedia spider_all.py)
   # type=crawl: 走 NewsCrawlerSkill 的"列表+详情"双步抓取
