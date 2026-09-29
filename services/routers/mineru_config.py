@@ -69,6 +69,17 @@ def _persist_env(payload: MinerUConfigPayload) -> None:
         for k, v in env_map.items():
             f.write(f"{k}={v}\n")
 
+    # 同步刷新进程内 settings 单例,保存后立即生效(否则要重启才生效)
+    settings = get_settings()
+    settings.mineru_mode = payload.mode
+    if payload.api_key:
+        settings.mineru_api_key = payload.api_key
+    settings.mineru_endpoint = payload.endpoint
+    settings.mineru_timeout = payload.timeout
+    settings.mineru_model_version = payload.model_version
+    settings.mineru_poll_interval = payload.poll_interval
+    settings.mineru_max_polls = payload.max_polls
+
 
 @router.get("/config")
 async def get_config() -> dict[str, Any]:
