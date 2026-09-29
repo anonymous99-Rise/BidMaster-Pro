@@ -43,7 +43,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ height: '100%', position: 'relative', overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {/* SVG Background */}
       <img
         src="./login-bg.svg"
@@ -208,6 +208,14 @@ export default function LoginPage() {
         }}>
           默认管理员: admin@bidmaster.pro / admin123
         </div>
+      </div>
+
+      <div style={{
+        position: 'absolute', bottom: '16px', left: 0, right: 0,
+        textAlign: 'center', fontSize: '12px', color: 'rgba(255,255,255,0.75)',
+        zIndex: 5,
+      }}>
+        © 2026 宁夏希望信息产业股份有限公司
       </div>
 
       {/* CSS Animations */}
