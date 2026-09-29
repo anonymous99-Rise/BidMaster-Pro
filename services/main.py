@@ -33,6 +33,20 @@ from services.routers import projects, interpret, generate, check, format_doc, s
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
+    # compose 会注入空字符串环境变量(如 BMP_MINERU_API_KEY=""),而 pydantic
+    # 环境变量优先于 .env 文件,导致设置页写入 /app/.env 的配置被空值覆盖。
+    # 此处仅用 .env 值回填"为空"的环境变量,非空环境变量(部署显式配置)保持优先。
+    import os
+    from pathlib import Path
+    _env_file = Path(os.getcwd()) / ".env"
+    if _env_file.exists():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            if _k and not os.environ.get(_k):
+                os.environ[_k] = _v
     from services.skill_bootstrap import register_builtin_skills
     from core.task_manager import TaskManager
     from services.database import async_session
