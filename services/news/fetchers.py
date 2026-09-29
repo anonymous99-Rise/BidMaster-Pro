@@ -349,6 +349,7 @@ class HTMLFetcher(BaseFetcher):
             href = hm.group(1)
             tm = self.RE_TITLE_ATTR.search(attrs)
             title = (tm.group(1).strip() if tm else "") or self.RE_TAG.sub('', inner).strip()
+            title = self.RE_WS.sub(' ', title).strip()
             if len(title) < 10 or len(title) > 200:
                 continue
             # 只保留含中文的链接(过滤导航/英文页脚)

@@ -118,7 +118,8 @@ tender_service:
     url: "https://www.ebidding.com/notice"
     industry: "01"
     weight: 0.8
-    enabled: true
+    # 2026-09-30 实测: 站点不可达
+    enabled: false
   - name: "千里马招标网"
     code: "qianlima"
     type: "crawl"
@@ -170,7 +171,8 @@ enterprise_tender:
     url: "https://ecp.csg.cn"
     industry: "05"
     weight: 0.9
-    enabled: true
+    # 2026-09-30 实测: 站点不可达
+    enabled: false
   - name: "中国华电集团采购平台"
     code: "chd"
     type: "crawl"
@@ -233,7 +235,8 @@ general_news:
     url: "https://www.leiphone.com/category/ai/feed"
     industry: "12"
     weight: 0.9
-    enabled: true
+    # 2026-09-30 实测: feed 持续 500
+    enabled: false
     description: "AI 产业评论"
 
   # 国内 AI 公司博客 (来自 ai-content-publisher)
