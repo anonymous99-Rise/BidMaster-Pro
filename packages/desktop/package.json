@@ -7,7 +7,10 @@
     "type": "git",
     "url": "https://github.com/anonymous99-Rise/BidMaster-Pro.git"
   },
-  "author": "BidMaster Team",
+  "author": {
+    "name": "BidMaster Team",
+    "email": "admin@bidmaster.pro"
+  },
   "license": "MIT",
   "scripts": {
     "dev": "vite",
