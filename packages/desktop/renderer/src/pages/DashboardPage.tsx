@@ -67,6 +67,7 @@ export default function DashboardPage() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const { setCurrentProject, currentProjectId } = useAppStore();
   const navigate = useNavigate();
@@ -96,7 +97,8 @@ export default function DashboardPage() {
   };
 
   const handleCreateProject = async () => {
-    if (!newProjectName.trim()) return;
+    if (creating || !newProjectName.trim()) return;
+    setCreating(true);
     try {
       const res = await projectApi.create(newProjectName.trim());
       setNewProjectName('');
@@ -106,6 +108,8 @@ export default function DashboardPage() {
       if (newId) setCurrentProject(newId);
     } catch (e) {
       console.error('创建项目失败', e);
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -574,10 +578,11 @@ export default function DashboardPage() {
                 onKeyDown={(e) => e.key === 'Enter' && handleCreateProject()}
                 autoFocus
               />
-              <button onClick={handleCreateProject} style={{
+              <button onClick={handleCreateProject} disabled={creating} style={{
                 padding: '5px 12px', background: '#059669', color: 'white', border: 'none',
-                borderRadius: '5px', cursor: 'pointer', fontSize: '11px', fontWeight: 500,
-              }}>确认</button>
+                borderRadius: '5px', cursor: creating ? 'not-allowed' : 'pointer', fontSize: '11px',
+                fontWeight: 500, opacity: creating ? 0.6 : 1,
+              }}>{creating ? '创建中...' : '确认'}</button>
               <button onClick={() => { setShowCreate(false); setNewProjectName(''); }} style={{
                 padding: '5px 10px', background: 'white', color: 'var(--color-text)',
                 border: '1px solid var(--color-border)', borderRadius: '5px', cursor: 'pointer', fontSize: '11px',
