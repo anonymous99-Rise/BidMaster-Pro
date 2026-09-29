@@ -431,28 +431,33 @@ export default function FormatPage() {
   };
 
   const handleExport = async (target: OutputFormat) => {
-    if (!file) {
-      setExportError('请先上传文件');
+    const hasProjectOutput = sourceMode === 'project' && !!lastOutputPath;
+    if (!file && !hasProjectOutput) {
+      setExportError(sourceMode === 'project' ? '请先执行「一键排版」生成输出' : '请先上传文件');
+      return;
+    }
+    if (hasProjectOutput && target !== 'docx') {
+      setExportError('项目章节模式仅支持导出 .docx；如需其他格式，请先下载 docx 再用「上传文件」模式导出');
       return;
     }
     setExporting(target);
     setExportError('');
     try {
-      const baseName = file.name.replace(/\.docx?$/i, '');
+      const baseName = file
+        ? file.name.replace(/\.docx?$/i, '')
+        : (projects.find(p => p.id === selectedProjectId)?.name || '项目章节');
       if (target === 'docx' && lastOutputPath) {
-        const link = document.createElement('a');
-        link.href = formatApi.downloadOutput(lastOutputPath);
-        link.download = `${baseName}.docx`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        // Electron file:// 下 <a download> 跨域点击不可靠，统一 fetch blob 后触发保存
+        const res = await fetch(formatApi.downloadOutput(lastOutputPath));
+        if (!res.ok) throw new Error(`下载失败 (HTTP ${res.status})`);
+        downloadBlob(await res.blob(), `${baseName}.docx`);
         return;
       }
       const res = target === 'docx'
-        ? await formatApi.exportFormattedDocx(file, template)
+        ? await formatApi.exportFormattedDocx(file!, template)
         : target === 'doc'
-          ? await formatApi.exportDoc(file, template, true)
-          : await formatApi.exportPdf(file, template, true);
+          ? await formatApi.exportDoc(file!, template, true)
+          : await formatApi.exportPdf(file!, template, true);
       const blob = res.data as unknown;
       if (!(blob instanceof Blob)) {
         throw new Error('后端未返回文件内容（可能是错误响应）');
