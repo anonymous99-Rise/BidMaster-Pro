@@ -1,6 +1,6 @@
 {
   "name": "bidmaster-pro-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "BidMaster Pro - 全流程智能招投标平台",
   "main": "main/index.js",
   "repository": {
@@ -31,6 +31,9 @@
       "owner": "anonymous99-Rise",
       "repo": "BidMaster-Pro",
       "releaseType": "release"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"]
     }
   },
   "dependencies": {
