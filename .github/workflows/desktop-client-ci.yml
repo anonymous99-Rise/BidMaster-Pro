@@ -2,6 +2,8 @@ name: Desktop Client CI Package
 
 on:
   push:
+    tags:
+      - "v*"
     paths:
       - "packages/desktop/**"
       - ".github/workflows/desktop-client-ci.yml"
@@ -12,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -45,9 +47,16 @@ jobs:
         run: npm ci
 
       - name: Build and package desktop client
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run electron:build
+
+      - name: Build, package and publish release assets
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run electron:build -- --publish always
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
