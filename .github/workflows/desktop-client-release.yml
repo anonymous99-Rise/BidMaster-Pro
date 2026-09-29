@@ -1,24 +1,66 @@
 name: Desktop Client Release
 
 # 触发方式：
-#   1. 推送版本 tag（推荐）：git tag v0.1.0 && git push origin v0.1.0
-#      tag 需与 packages/desktop/package.json 的 version 一致（如 v0.1.0 ↔ 0.1.0）
+#   1. 推送 main 分支且涉及 packages/desktop/** 变更 → 自动递增 patch 版本号并发布
 #   2. 手动触发（Actions 页面 Run workflow）
-# 产物：Windows 安装包 / macOS DMG / Linux AppImage，自动发布到 GitHub Releases
-# 注意：日常构建请用 desktop-client-ci.yml（只出构件，不发布）
+# 流程：读取 packages/desktop/package.json 的 version → patch+1 → 提交版本号并打 tag
+#       → 三平台构建 → electron-builder 自动发布到 GitHub Releases
+# 注意：工作流内用 GITHUB_TOKEN 推送的 commit/tag 不会再次触发工作流（GitHub 防递归机制），
+#       因此版本提交不会造成循环发版。日常构建请用 desktop-client-ci.yml（只出构件，不发布）。
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'packages/desktop/**'
+      - '.github/workflows/desktop-client-release.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  bump-version:
+    name: 递增版本号并打 tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Bump patch version
+        id: bump
+        working-directory: packages/desktop
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NEW_VERSION=$(node -e "const [a,b,c]=process.argv[1].split('.').map(Number);console.log([a,b,c+1].join('.'))" "$VERSION")
+          npm version "$NEW_VERSION" --no-git-tag-version
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "版本号: $VERSION → $NEW_VERSION"
+
+      - name: Commit version and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages/desktop/package.json packages/desktop/package-lock.json
+          git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
+          git tag "${{ steps.bump.outputs.tag }}"
+          git push origin HEAD:main --tags
+
   release:
     name: Release (${{ matrix.os }})
+    needs: bump-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,6 +73,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
