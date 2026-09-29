@@ -49,13 +49,6 @@ def _verify_password(password: str, hashed: str) -> bool:
         return hashed == hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def _cleanup_sessions():
-    now = time.time()
-    expired = [k for k, v in _sessions.items() if now - v["created_at"] > SESSION_TTL]
-    for k in expired:
-        del _sessions[k]
-
-
 def verify_token(token: str) -> dict | None:
     _cleanup_sessions()
     return get_session(token)
