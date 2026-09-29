@@ -19,7 +19,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <TitleBar />
-      <div style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <QueryClientProvider client={queryClient}>
           {/* Electron 生产模式走 file:// 协议，必须用 HashRouter，BrowserRouter 路由匹配会失效导致白屏 */}
           <HashRouter>

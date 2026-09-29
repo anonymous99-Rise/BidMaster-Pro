@@ -44,7 +44,8 @@ export default function TitleBar() {
             width: '44px', height: '100%', border: 'none', cursor: 'pointer',
             background: 'transparent', color: 'var(--color-text-secondary)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
           onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f1f5f9'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
         >
@@ -57,7 +58,8 @@ export default function TitleBar() {
             width: '44px', height: '100%', border: 'none', cursor: 'pointer',
             background: 'transparent', color: 'var(--color-text-secondary)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
           onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#f1f5f9'; }}
           onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
         >
@@ -70,7 +72,8 @@ export default function TitleBar() {
             width: '44px', height: '100%', border: 'none', cursor: 'pointer',
             background: 'transparent', color: 'var(--color-text-secondary)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
           onMouseEnter={(e) => {
             (e.currentTarget as HTMLButtonElement).style.background = '#dc2626';
             (e.currentTarget as HTMLButtonElement).style.color = 'white';
