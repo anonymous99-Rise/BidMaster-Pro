@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
@@ -64,7 +65,9 @@ class RSSFetcher(BaseFetcher):
             return []
 
         try:
-            resp = requests.get(
+            # requests 是同步库,必须放线程池执行,否则会阻塞整个事件循环(单 worker 时拖死全部接口)
+            resp = await asyncio.to_thread(
+                requests.get,
                 url,
                 timeout=15,
                 headers={"User-Agent": "BidMaster-Pro/1.0 (Tender Monitor)"},
@@ -123,7 +126,8 @@ class RSSFetcher(BaseFetcher):
         失败时回退到 RSS summary。
         """
         try:
-            resp = requests.get(
+            resp = await asyncio.to_thread(
+                requests.get,
                 url,
                 timeout=10,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
@@ -180,7 +184,8 @@ class APIFetcher(BaseFetcher):
         query = f"{languages} {topics} stars:>={cfg.get('min_stars', 5)}"
 
         try:
-            resp = requests.get(
+            resp = await asyncio.to_thread(
+                requests.get,
                 config.get("url", "https://api.github.com/search/repositories"),
                 params={"q": query, "sort": "stars", "per_page": cfg.get("max_results", 20)},
                 timeout=30,
