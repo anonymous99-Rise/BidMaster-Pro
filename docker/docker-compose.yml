@@ -235,6 +235,9 @@ services:
         condition: service_started
         required: false
     volumes: *api-volumes
+    # 镜像 HEALTHCHECK 探活 api 的 8000 端口,celery 不监听 HTTP,显式禁用避免误报 unhealthy
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
@@ -256,6 +259,8 @@ services:
         required: false
     volumes:
       - celerybeat:/app/celerybeat
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
