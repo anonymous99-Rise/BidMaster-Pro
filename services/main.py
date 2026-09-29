@@ -93,6 +93,8 @@ if _extra_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_electron_origins,
+    # file:// 页面发起跨域请求时 Origin 为 "null"，桌面客户端依赖此正则放行
+    allow_origin_regex=r"^(https?://.*|null|file://|app://\..*)$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent", "X-Requested-With", "X-API-Key"],
