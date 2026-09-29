@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,9 +9,11 @@ from sqlalchemy import select
 
 from services.database import get_db
 from services.models import AgentConfig, LLMProviderConfig
-from services.llm_factory import get_llm_gateway
+from services.llm_factory import get_llm_gateway, set_llm_gateway_from_provider
 from services.middleware.rbac_middleware import get_current_user, require_permission
 from services.models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -177,6 +181,7 @@ async def list_providers():
         {"id": "siliconflow", "name": "硅基流动", "models": ["deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen2.5-72B-Instruct", "Qwen/Qwen2.5-32B-Instruct", "THUDM/glm-4-9b-chat"]},
         {"id": "ollama", "name": "Ollama(本地)", "models": ["qwen2.5", "llama3.1", "mistral"]},
         {"id": "openai", "name": "OpenAI", "models": ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]},
+        {"id": "sub2api", "name": "Sub2API(自定义网关)", "models": []},
     ]}
 
 
@@ -198,6 +203,62 @@ async def test_connection(config: dict):
         return {"success": True, "response": result}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.post("/fetch-models")
+async def fetch_models(config: dict):
+    """从 OpenAI 兼容网关（Sub2API / OneAPI / NewAPI 等）动态拉取可用模型列表。"""
+    import re
+
+    import httpx
+
+    api_base = str(config.get("api_base", "")).strip()
+    api_key = str(config.get("api_key", "")).strip()
+    if not api_base:
+        return {"success": False, "error": "API Base URL 不能为空"}
+    if not re.match(r"^https?://[A-Za-z0-9._\-:/?#=&%~+@,!\[\]']{1,256}$", api_base):
+        return {"success": False, "error": "API Base URL 格式不合法"}
+
+    base = api_base.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    url = base + "/models"
+
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        models = sorted({
+            m.get("id") for m in data.get("data", [])
+            if isinstance(m, dict) and m.get("id")
+        })
+        return {"success": True, "models": models}
+    except httpx.HTTPStatusError as e:
+        return {"success": False, "error": f"网关返回 {e.response.status_code}，请检查 API Base 与 Key"}
+    except Exception as e:
+        return {"success": False, "error": f"拉取模型列表失败: {str(e)[:200]}"}
+
+
+async def _refresh_default_gateway(db: AsyncSession):
+    """默认供应商配置变化后重建运行时网关，使 DB 配置立即生效（无默认时回退环境变量）。"""
+    try:
+        result = await db.execute(
+            select(LLMProviderConfig).where(LLMProviderConfig.is_default == True, LLMProviderConfig.enabled == True)
+        )
+        cfg = result.scalar_one_or_none()
+        if cfg:
+            set_llm_gateway_from_provider({
+                "api_key": cfg.api_key,
+                "api_base": cfg.api_base or "",
+                "default_model": cfg.default_model or "",
+            })
+            logger.info(f"[llm] 运行时网关已切换至默认配置 {cfg.provider_id}/{cfg.default_model}")
+        else:
+            set_llm_gateway_from_provider(None)
+    except Exception as e:
+        logger.warning(f"[llm] 刷新运行时网关失败: {e}")
 
 
 @router.get("/usage")
@@ -398,6 +459,7 @@ async def create_llm_config(payload: LLMConfigCreate, db: AsyncSession = Depends
         cfg.is_default = True
     db.add(cfg)
     await db.flush()
+    await _refresh_default_gateway(db)
     return {"success": True, "id": cfg.id}
 
 
@@ -431,6 +493,7 @@ async def update_llm_config(config_id: str, payload: LLMConfigUpdate, db: AsyncS
     if payload.note is not None:
         cfg.note = payload.note
     await db.flush()
+    await _refresh_default_gateway(db)
     return {"success": True}
 
 
@@ -449,6 +512,7 @@ async def delete_llm_config(config_id: str, db: AsyncSession = Depends(get_db)):
         if first:
             first.is_default = True
             await db.flush()
+    await _refresh_default_gateway(db)
     return {"success": True}
 
 
@@ -461,6 +525,7 @@ async def set_default_config(config_id: str, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="配置不存在")
     cfg.is_default = True
     await db.flush()
+    await _refresh_default_gateway(db)
     return {"success": True}
 
 

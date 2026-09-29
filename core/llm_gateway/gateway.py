@@ -42,6 +42,7 @@ class LLMGateway:
             "deepseek", "openai", "ollama", "zhipu", "dashscope",
             "azure", "anthropic", "cohere", "huggingface", "vertex_ai",
             "gemini", "mistral", "groq", "together_ai", "replicate",
+            "sub2api", "custom",
         }
         if "/" in model:
             prefix, rest = model.split("/", 1)

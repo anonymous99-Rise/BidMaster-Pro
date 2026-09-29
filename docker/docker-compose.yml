@@ -80,10 +80,13 @@ x-default-logging: &default-logging
     max-size: "50m"
     max-file: "5"
 
+# 基础镜像默认走 Docker Hub 国内代理（DaoCloud）；
+# 海外部署设环境变量 DOCKER_REGISTRY=docker.io 还原官方源
+
 services:
   # ─────────────── PostgreSQL 16（--profile infra 启用）───────────────
   postgres:
-    image: postgres:16-alpine
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/postgres:16-alpine
     restart: unless-stopped
     profiles: ["infra"]
     environment:
@@ -105,7 +108,7 @@ services:
 
   # ─────────────── MySQL 8（--profile infra + --profile mysql 启用）───────────────
   mysql:
-    image: mysql:8.0
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/mysql:8.0
     restart: unless-stopped
     profiles: ["infra", "mysql"]
     environment:
@@ -133,7 +136,7 @@ services:
 
   # ─────────────── Redis 7（--profile infra 启用）───────────────
   redis:
-    image: redis:7-alpine
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/redis:7-alpine
     restart: unless-stopped
     profiles: ["infra"]
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
@@ -150,7 +153,7 @@ services:
 
   # ─────────────── MinIO 对象存储（--profile infra 启用）───────────────
   minio:
-    image: minio/minio:latest
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/minio/minio:latest
     restart: unless-stopped
     profiles: ["infra"]
     command: server /data --console-address ":9001"
@@ -172,7 +175,7 @@ services:
 
   # MinIO 初始化：创建 bucket（仅首次运行，--profile infra 启用）
   minio-init:
-    image: minio/mc:latest
+    image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/minio/mc:latest
     profiles: ["infra"]
     depends_on:
       minio:

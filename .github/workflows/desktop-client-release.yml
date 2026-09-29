@@ -1,22 +1,24 @@
-name: Desktop Client CI Package
+name: Desktop Client Release
+
+# 触发方式：
+#   1. 推送版本 tag（推荐）：git tag v0.1.0 && git push origin v0.1.0
+#      tag 需与 packages/desktop/package.json 的 version 一致（如 v0.1.0 ↔ 0.1.0）
+#   2. 手动触发（Actions 页面 Run workflow）
+# 产物：Windows 安装包 / macOS DMG / Linux AppImage，自动发布到 GitHub Releases
+# 注意：日常构建请用 desktop-client-ci.yml（只出构件，不发布）
 
 on:
   push:
-    paths:
-      - "packages/desktop/**"
-      - ".github/workflows/desktop-client-ci.yml"
-  pull_request:
-    paths:
-      - "packages/desktop/**"
-      - ".github/workflows/desktop-client-ci.yml"
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  package:
-    name: Package (${{ matrix.os }})
+  release:
+    name: Release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -44,16 +46,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and package desktop client
+      - name: Build and publish desktop client
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # --publish=never：CI 构建只产出构件，发布走 desktop-client-release.yml（推 tag 触发）
-        run: npm run electron:build -- --publish=never
+        run: npm run electron:build -- --publish=always
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-client-${{ matrix.os }}
+          name: desktop-client-release-${{ matrix.os }}
           path: |
             packages/desktop/dist/*.exe
             packages/desktop/dist/*.dmg
