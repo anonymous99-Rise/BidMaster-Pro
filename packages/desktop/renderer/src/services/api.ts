@@ -185,6 +185,9 @@ export const projectApi = {
   list: () => api.get<{ projects: Project[] }>('/projects/'),
   create: (name: string) => api.post(`/projects/?name=${encodeURIComponent(name)}`),
   get: (id: string) => api.get(`/projects/${id}`),
+  update: (id: string, payload: { name?: string; config?: Record<string, unknown> }) =>
+    api.patch(`/projects/${id}`, payload),
+  remove: (id: string) => api.delete(`/projects/${id}`),
   updateStatus: (id: string, status: string) => api.patch(`/projects/${id}/status?status=${status}`),
   confirmGate: (id: string, stage: string) => api.post(`/projects/${id}/gate/${stage}`),
   resetGate: (id: string, stage: string) => api.delete(`/projects/${id}/gate/${stage}`),

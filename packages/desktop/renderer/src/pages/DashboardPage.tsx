@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FileSearch, PenTool, ShieldCheck, FileText, Plus, ArrowRight,
-  CheckCircle2, Clock, Newspaper, FolderOpen,
+  CheckCircle2, Clock, Newspaper, FolderOpen, Pencil, Trash2,
   Zap, Activity, ChevronDown, Lightbulb, AlertCircle, ShieldAlert, FileCheck,
 } from 'lucide-react';
 import { projectApi, type Project } from '../services/api';
@@ -64,6 +64,9 @@ export default function DashboardPage() {
   const [newProjectName, setNewProjectName] = useState('');
   const [expandedFlow, setExpandedFlow] = useState<number | null>(null);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
   const { setCurrentProject, currentProjectId } = useAppStore();
   const navigate = useNavigate();
@@ -103,6 +106,29 @@ export default function DashboardPage() {
       if (newId) setCurrentProject(newId);
     } catch (e) {
       console.error('创建项目失败', e);
+    }
+  };
+
+  const handleRenameProject = async () => {
+    if (!renamingId || !renameValue.trim()) return;
+    try {
+      await projectApi.update(renamingId, { name: renameValue.trim() });
+      setRenamingId(null);
+      setRenameValue('');
+      await loadProjects();
+    } catch (e) {
+      console.error('重命名项目失败', e);
+    }
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    try {
+      await projectApi.remove(id);
+      if (currentProjectId === id) setCurrentProject(null);
+      setDeletingId(null);
+      await loadProjects();
+    } catch (e) {
+      console.error('删除项目失败', e);
     }
   };
 
@@ -211,6 +237,41 @@ export default function DashboardPage() {
                         const pStep = statusToStep[p.status] ?? 0;
                         const st = statusMap[p.status] || { label: p.status, color: '#6b7280' };
                         const isActive = p.id === currentProjectId;
+                        if (renamingId === p.id) {
+                          return (
+                            <div
+                              key={p.id}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '6px',
+                                padding: '6px 12px', borderBottom: '1px solid #f1f5f9', background: '#f8fafc',
+                              }}
+                            >
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleRenameProject();
+                                  if (e.key === 'Escape') { setRenamingId(null); setRenameValue(''); }
+                                }}
+                                style={{
+                                  flex: 1, minWidth: 0, padding: '4px 8px',
+                                  border: '1px solid var(--color-primary)', borderRadius: '6px',
+                                  fontSize: '12px', outline: 'none', boxSizing: 'border-box',
+                                }}
+                              />
+                              <button onClick={handleRenameProject} style={{
+                                padding: '3px 10px', background: 'var(--color-primary)', color: 'white',
+                                border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '11px', flexShrink: 0,
+                              }}>确定</button>
+                              <button onClick={() => { setRenamingId(null); setRenameValue(''); }} style={{
+                                padding: '3px 10px', background: '#e2e8f0', color: '#475569',
+                                border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '11px', flexShrink: 0,
+                              }}>取消</button>
+                            </div>
+                          );
+                        }
                         return (
                           <div
                             key={p.id}
@@ -230,9 +291,30 @@ export default function DashboardPage() {
                                 {p.name}
                               </span>
                             </div>
-                            <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', fontWeight: 500, background: `${st.color}10`, color: st.color, flexShrink: 0 }}>
-                              {st.label}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                              <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '4px', fontWeight: 500, background: `${st.color}10`, color: st.color }}>
+                                {st.label}
+                              </span>
+                              <button title="重命名" onClick={() => { setRenamingId(p.id); setRenameValue(p.name); setDeletingId(null); }} style={{
+                                padding: '3px', background: 'transparent', border: 'none', borderRadius: '4px',
+                                cursor: 'pointer', display: 'flex', alignItems: 'center',
+                              }}>
+                                <Pencil size={11} color="#64748b" />
+                              </button>
+                              {deletingId === p.id ? (
+                                <button onClick={() => handleDeleteProject(p.id)} style={{
+                                  padding: '2px 6px', background: '#fef2f2', color: '#dc2626',
+                                  border: '1px solid #fecaca', borderRadius: '4px', cursor: 'pointer', fontSize: '9px', fontWeight: 600,
+                                }}>确认删除</button>
+                              ) : (
+                                <button title="删除" onClick={() => { setDeletingId(p.id); setRenamingId(null); }} style={{
+                                  padding: '3px', background: 'transparent', border: 'none', borderRadius: '4px',
+                                  cursor: 'pointer', display: 'flex', alignItems: 'center',
+                                }}>
+                                  <Trash2 size={11} color="#64748b" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         );
                       })}

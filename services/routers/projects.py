@@ -4,10 +4,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete as sa_delete
 
 from services.database import get_db
-from services.models import Project, ProjectStatus, Document, DocumentType, User
+from services.models import Project, ProjectStatus, Document, DocumentType, User, Analysis, Outline, Chapter, CheckReport
 from services.middleware.rbac_middleware import get_current_user, require_permission
 
 router = APIRouter()
@@ -121,6 +121,60 @@ async def update_project_status(
         raise HTTPException(status_code=400, detail=f"无效状态: {status}")
     await db.flush()
     return {"project_id": str(project.id), "status": project.status}
+
+
+@router.patch("/{project_id}")
+async def update_project(
+    project_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("project.update")),
+):
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if project.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="无权修改该项目")
+
+    if "name" in payload and payload["name"] is not None:
+        name = str(payload["name"]).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="项目名称不能为空")
+        project.name = name
+    if "config" in payload and payload["config"] is not None:
+        if not isinstance(payload["config"], dict):
+            raise HTTPException(status_code=400, detail="config 必须是对象")
+        project.config = payload["config"]
+    await db.flush()
+    return {"project_id": str(project.id), "name": project.name, "config": project.config}
+
+
+@router.delete("/{project_id}")
+async def delete_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_permission("project.delete")),
+):
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if project.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="无权删除该项目")
+
+    # Project 的 relationship 未配置级联,PostgreSQL 外键会拦截,先按序清子表
+    for model in (Chapter, CheckReport, Analysis, Outline, Document):
+        await db.execute(sa_delete(model).where(model.project_id == project_id))
+    await db.delete(project)
+    await db.flush()
+
+    # 清理上传文件目录 (同步 IO 放线程池)
+    import asyncio
+    import shutil
+    await asyncio.to_thread(shutil.rmtree, f"./projects/{project_id}", True)
+
+    return {"success": True, "project_id": project_id}
 
 
 @router.post("/{project_id}/gate/{stage}")
