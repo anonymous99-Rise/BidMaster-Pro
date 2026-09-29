@@ -1,5 +1,21 @@
 import axios from 'axios';
 
+// 桌面端(file:// 协议)无法用相对路径请求后端，服务器地址存 localStorage；
+// 网页版留空走同源 /api（vite dev 代理 / nginx 反代）
+export function getServerBase(): string {
+  const saved = localStorage.getItem('bidmaster_server_base');
+  return saved ? saved.trim().replace(/\/+$/, '') : '';
+}
+
+export function setServerBase(url: string): void {
+  const trimmed = (url || '').trim().replace(/\/+$/, '');
+  if (trimmed) {
+    localStorage.setItem('bidmaster_server_base', trimmed);
+  } else {
+    localStorage.removeItem('bidmaster_server_base');
+  }
+}
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 120000,
@@ -9,6 +25,10 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  const base = getServerBase();
+  if (base) {
+    config.baseURL = `${base}/api`;
+  }
   const token = localStorage.getItem('bidmaster_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -32,8 +52,8 @@ api.interceptors.response.use(
           }
         } catch { /* ignore */ }
       }
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+      if (!window.location.hash.includes('/login')) {
+        window.location.hash = '#/login';
       }
     }
     return Promise.reject(error);
@@ -60,7 +80,7 @@ export function streamSSE(url: string, handlers: SSEHandlers): SSEController {
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
-      const response = await fetch(url, { headers, signal: controller.signal });
+      const response = await fetch(`${getServerBase()}${url}`, { headers, signal: controller.signal });
       if (!response.ok || !response.body) {
         throw new Error(`SSE 连接失败 (${url}): HTTP ${response.status}`);
       }
@@ -417,7 +437,7 @@ export const formatApi = {
   getTemplate: (name: string) => api.get(`/format/templates/${name}`),
   saveTemplate: (name: string, config: Record<string, unknown>) => api.put(`/format/templates/${name}`, config),
   deleteTemplate: (name: string) => api.delete(`/format/templates/${name}`),
-  downloadOutput: (path: string) => `/api/format/download?path=${encodeURIComponent(path)}`,
+  downloadOutput: (path: string) => `${getServerBase()}/api/format/download?path=${encodeURIComponent(path)}`,
 };
 
 export interface MinerUConfig {

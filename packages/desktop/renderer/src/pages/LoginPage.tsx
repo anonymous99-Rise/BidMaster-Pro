@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { authApi } from '../services/api';
+import { authApi, getServerBase, setServerBase } from '../services/api';
 import { useAppStore } from '../stores/appStore';
+
+const isDesktop = typeof window !== 'undefined' && 'electronAPI' in window;
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const { setUser, setToken } = useAppStore();
+  const [serverBase, setServerBaseState] = useState(getServerBase());
   const [email, setEmail] = useState('admin@bidmaster.com');
   const [password, setPassword] = useState('admin123');
   const [loading, setLoading] = useState(false);
@@ -15,6 +18,9 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    if (isDesktop) {
+      setServerBase(serverBase);
+    }
 
     try {
       const res = await authApi.login(email, password);
@@ -40,7 +46,7 @@ export default function LoginPage() {
     <div style={{ minHeight: '100vh', position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {/* SVG Background */}
       <img
-        src="/login-bg.svg"
+        src="./login-bg.svg"
         alt=""
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', zIndex: 0 }}
       />
@@ -97,6 +103,31 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleLogin}>
+          {isDesktop && (
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{
+                fontSize: '13px', fontWeight: 500, color: '#374151',
+                display: 'block', marginBottom: '6px',
+              }}>
+                服务器地址
+              </label>
+              <input
+                type="text"
+                value={serverBase}
+                onChange={(e) => setServerBaseState(e.target.value)}
+                placeholder="如: http://your-server:8000"
+                style={{
+                  width: '100%', padding: '10px 14px',
+                  border: '1px solid #d1d5db', borderRadius: '8px',
+                  fontSize: '14px', boxSizing: 'border-box',
+                  outline: 'none', transition: 'border-color 0.2s',
+                }}
+                onFocus={(e) => e.target.style.borderColor = '#3b82f6'}
+                onBlur={(e) => e.target.style.borderColor = '#d1d5db'}
+              />
+            </div>
+          )}
+
           <div style={{ marginBottom: '20px' }}>
             <label style={{
               fontSize: '13px', fontWeight: 500, color: '#374151',
