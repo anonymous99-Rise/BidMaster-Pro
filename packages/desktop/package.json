@@ -3,11 +3,35 @@
   "version": "0.1.0",
   "description": "BidMaster Pro - 全流程智能招投标平台",
   "main": "main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anonymous99-Rise/BidMaster-Pro.git"
+  },
+  "author": "BidMaster Team",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:15168 && electron .\"",
     "electron:build": "vite build && electron-builder"
+  },
+  "build": {
+    "appId": "com.bidmaster.pro",
+    "productName": "BidMaster Pro",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main/**",
+      "preload/**",
+      "dist/**"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "anonymous99-Rise",
+      "repo": "BidMaster-Pro",
+      "releaseType": "release"
+    }
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

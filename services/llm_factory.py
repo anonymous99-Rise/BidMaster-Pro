@@ -24,6 +24,26 @@ def get_llm_gateway() -> LLMGateway:
     return _gateway
 
 
+def set_llm_gateway_from_provider(provider: dict | None) -> None:
+    """用数据库中的默认供应商配置重建运行时网关；provider 为 None 时回退到环境变量。"""
+    global _gateway
+    if not provider or not (provider.get("api_key") or provider.get("api_base")):
+        _gateway = None
+        return
+    settings = get_settings()
+    _gateway = LLMGateway({
+        "providers": [
+            {
+                "api_key": provider.get("api_key") or "",
+                "api_base": provider.get("api_base") or "",
+            }
+        ],
+        "default_model": provider.get("default_model") or settings.llm_default_model,
+        "fallback_models": [m.strip() for m in settings.llm_fallback_modes.split(",") if m.strip()],
+        "max_retries": settings.llm_max_retries,
+    })
+
+
 def reset_llm_gateway():
     global _gateway
     _gateway = None

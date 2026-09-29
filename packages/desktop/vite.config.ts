@@ -5,6 +5,8 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   root: 'renderer',
+  // Electron loadFile 使用 file:// 协议，必须相对路径引用资源
+  base: './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './renderer/src'),

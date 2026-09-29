@@ -302,6 +302,23 @@ npm run electron:dev
 
 ---
 
+## 📚 项目文档
+
+详细技术文档见 [docs/](docs/) 目录：
+
+| 文档 | 内容 |
+|------|------|
+| [总体架构](docs/01-architecture.md) | 系统分层、技术栈、核心数据流 |
+| [后端服务层](docs/02-backend-services.md) | FastAPI 路由、中间件、Celery、Agent |
+| [核心引擎](docs/03-core-engines.md) | LLM 网关、Agent/Skill/RAG/文档引擎 |
+| [数据模型](docs/04-database.md) | 全部数据表与关系 |
+| [Skill 清单](docs/05-skills.md) | 47 个内置 Skill 详解 |
+| [前端](docs/06-frontend.md) | Electron + React 结构与设置页 |
+| [部署与配置](docs/07-deployment.md) | Docker/本地部署、环境变量全表 |
+| [LLM 供应商配置](docs/08-llm-providers.md) | 多供应商切换、Sub2API 自定义网关配置指南 |
+
+---
+
 ## 🔧 核心概念
 
 ### Skill (技能)
