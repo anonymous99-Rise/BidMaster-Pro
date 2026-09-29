@@ -18,6 +18,8 @@ ARG REGISTRY=docker.m.daocloud.io
 FROM ${REGISTRY}/library/node:20-alpine AS builder
 
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+# web 镜像只需 vite 构建前端,electron 二进制(约100MB,国内下载易卡死)直接跳过
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 
 WORKDIR /build
 
