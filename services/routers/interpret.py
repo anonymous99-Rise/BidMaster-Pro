@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -127,7 +128,8 @@ async def parse_tender_file(project_id: str, db: AsyncSession = Depends(get_db))
     file_ext = Path(doc.file_path).suffix
     try:
         parser = get_parser(file_ext)
-        parsed = parser.parse(doc.file_path)
+        # 解析(含 .doc 的 LibreOffice 转换)是同步阻塞操作,放线程池避免卡死事件循环
+        parsed = await asyncio.to_thread(parser.parse, doc.file_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"文件解析失败: {e}")
 
