@@ -39,6 +39,30 @@ async def lifespan(app: FastAPI):
     register_builtin_skills()
     await init_db()
 
+    # 启动时用数据库中的默认 LLM 供应商重建运行时网关,
+    # 否则重启后回退到环境变量(通常为空),网关会用占位符 key 导致 401
+    try:
+        from sqlalchemy import select
+        from services.models import LLMProviderConfig
+        from services.llm_factory import set_llm_gateway_from_provider
+        async with async_session()() as _ldb:
+            _row = (await _ldb.execute(
+                select(LLMProviderConfig)
+                .where(LLMProviderConfig.enabled == True, LLMProviderConfig.is_default == True)
+                .order_by(LLMProviderConfig.updated_at.desc())
+            )).scalars().first()
+            if _row:
+                set_llm_gateway_from_provider({
+                    "api_key": _row.api_key,
+                    "api_base": _row.api_base,
+                    "default_model": _row.default_model,
+                })
+                logging.getLogger("llm").info(
+                    f"[llm] 启动已从数据库加载默认供应商配置: {_row.provider_id}/{_row.default_model}"
+                )
+    except Exception as _e:
+        logging.getLogger("llm").warning(f"[llm] 启动加载 LLM 配置失败 (回退环境变量): {_e}")
+
     # 同步预置数据源 (YAML -> DB),仅做幂等写入,不抛错
     try:
         from services.news.source_registry import sync_sources_to_db
