@@ -5,19 +5,22 @@ import secrets
 import time
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.database import get_db
 from services.models import User, RBACUserRole, RBACRole
+from services.session_store import (
+    SESSION_TTL,
+    cleanup_expired as _cleanup_sessions,
+    delete_session,
+    get_session,
+    save_session,
+)
 
 router = APIRouter()
-
-_sessions: dict[str, dict] = {}
-
-SESSION_TTL = 86400 * 7
 
 
 class LoginRequest(BaseModel):
@@ -55,13 +58,7 @@ def _cleanup_sessions():
 
 def verify_token(token: str) -> dict | None:
     _cleanup_sessions()
-    session = _sessions.get(token)
-    if not session:
-        return None
-    if time.time() - session["created_at"] > SESSION_TTL:
-        del _sessions[token]
-        return None
-    return session
+    return get_session(token)
 
 
 @router.post("/login")
@@ -80,13 +77,13 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     token = secrets.token_hex(32)
     _cleanup_sessions()
-    _sessions[token] = {
+    save_session(token, {
         "user_id": str(user.id),
         "email": user.email,
         "name": user.name,
         "role": user.role,
         "created_at": time.time(),
-    }
+    })
 
     ur_result = await db.execute(
         select(RBACUserRole.role_id).where(RBACUserRole.user_id == user.id)
@@ -151,8 +148,8 @@ async def logout(request: Request, db: AsyncSession = Depends(get_db)):
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()
-        if token and token in _sessions:
-            del _sessions[token]
+        if token:
+            delete_session(token)
     return {"success": True}
 
 
@@ -179,7 +176,6 @@ async def change_password(
     user.password_hash = _hash_password(new_password)
     await db.flush()
 
-    if token in _sessions:
-        del _sessions[token]
+    delete_session(token)
 
     return {"success": True, "message": "密码已修改，请重新登录"}
