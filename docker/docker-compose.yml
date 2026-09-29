@@ -106,11 +106,11 @@ services:
       start_period: 10s
     logging: *default-logging
 
-  # ─────────────── MySQL 8（--profile infra + --profile mysql 启用）───────────────
+  # ─────────────── MySQL 8（仅 --profile mysql 启用）───────────────
   mysql:
     image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/mysql:8.0
     restart: unless-stopped
-    profiles: ["infra", "mysql"]
+    profiles: ["mysql"]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-bidmaster}
