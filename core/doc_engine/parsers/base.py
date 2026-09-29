@@ -22,8 +22,8 @@ PARSER_REGISTRY: dict[str, type] = {}
 EXT_MAP = {
     ".pdf": "pdf_parser",
     ".docx": "docx_parser",
-    ".doc": "docx_parser",
-    ".wps": "docx_parser",
+    ".doc": "legacy_doc_parser",
+    ".wps": "legacy_doc_parser",
     ".txt": "txt_parser",
     ".md": "txt_parser",
     ".html": "txt_parser",
@@ -37,10 +37,12 @@ def _register_parsers():
     from core.doc_engine.parsers.pdf_parser import PdfParser
     from core.doc_engine.parsers.docx_parser import DocxParser
     from core.doc_engine.parsers.txt_parser import TxtParser
+    from core.doc_engine.parsers.legacy_doc_parser import LegacyDocParser
 
     PARSER_REGISTRY["pdf_parser"] = PdfParser
     PARSER_REGISTRY["docx_parser"] = DocxParser
     PARSER_REGISTRY["txt_parser"] = TxtParser
+    PARSER_REGISTRY["legacy_doc_parser"] = LegacyDocParser
 
 
 _register_parsers()
