@@ -419,6 +419,15 @@ async def format_from_project(
         raise HTTPException(status_code=500, detail=result.error or "项目章节组装失败")
 
     final_output = result.data.get("output_path") if isinstance(result.data, dict) else None
+    if final_output:
+        # skill 产物默认写在临时目录,/api/format/download 仅放行 uploads/formatted,
+        # 持久化过去否则前端无法下载
+        import asyncio
+        import shutil
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        persist_path = UPLOAD_DIR / Path(final_output).name
+        await asyncio.to_thread(shutil.copy2, final_output, persist_path)
+        final_output = str(persist_path)
 
     return {
         "success": True,
