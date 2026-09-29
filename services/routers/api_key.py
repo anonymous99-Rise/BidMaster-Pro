@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -105,7 +105,7 @@ async def issue_api_key(
     key_hash = _hash_key(raw)
     prefix = _build_prefix(raw)
 
-    expires_at = datetime.now(timezone.utc) + timedelta(days=req.ttl_days)
+    expires_at = datetime.utcnow() + timedelta(days=req.ttl_days)
     api_key = ApiKey(
         key_hash=key_hash,
         key_prefix=prefix,
@@ -200,7 +200,7 @@ async def update_api_key(
     if req.expires_at is not None:
         updates["expires_at"] = req.expires_at
     if updates:
-        updates["updated_at"] = datetime.now(timezone.utc)
+        updates["updated_at"] = datetime.utcnow()
         await db.execute(update(ApiKey).where(ApiKey.id == api_key_id).values(**updates))
         await db.flush()
 
@@ -222,7 +222,7 @@ async def revoke_api_key(
     await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key_id)
-        .values(enabled=False, updated_at=datetime.now(timezone.utc))
+        .values(enabled=False, updated_at=datetime.utcnow())
     )
     await db.flush()
     logger.info(f"撤销 API Key: {api_key.key_prefix}")
@@ -252,7 +252,7 @@ async def recharge_credits(
         .values(
             credits_remaining=new_remaining,
             credits_total=new_total,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.utcnow(),
         )
     )
     await db.flush()
@@ -277,7 +277,7 @@ async def get_usage_stats(
     if not api_key:
         raise HTTPException(status_code=404, detail="API Key 不存在")
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.utcnow() - timedelta(days=days)
     # 总调用数 + 总 credits 消耗
     summary_result = await db.execute(
         select(

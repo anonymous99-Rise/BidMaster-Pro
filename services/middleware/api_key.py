@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select, update
@@ -67,13 +67,13 @@ async def _verify_api_key(request: Request, db: AsyncSession) -> ApiKey:
         raise HTTPException(status_code=401, detail="API Key 无效")
     if not api_key.enabled:
         raise HTTPException(status_code=403, detail="API Key 已被禁用")
-    if api_key.expires_at and api_key.expires_at < datetime.now(timezone.utc):
+    if api_key.expires_at and api_key.expires_at < datetime.utcnow():
         raise HTTPException(status_code=403, detail="API Key 已过期")
 
     # 记录最后使用时间（异步不阻塞）
     try:
         await db.execute(
-            update(ApiKey).where(ApiKey.id == api_key.id).values(last_used_at=datetime.now(timezone.utc))
+            update(ApiKey).where(ApiKey.id == api_key.id).values(last_used_at=datetime.utcnow())
         )
         await db.flush()
     except Exception as e:
@@ -159,7 +159,7 @@ async def consume_credits(
     await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key.id)
-        .values(credits_remaining=new_balance, updated_at=datetime.now(timezone.utc))
+        .values(credits_remaining=new_balance, updated_at=datetime.utcnow())
     )
 
     # 写入扣费日志
@@ -189,7 +189,7 @@ async def refund_credits(
     await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key.id)
-        .values(credits_remaining=new_balance, updated_at=datetime.now(timezone.utc))
+        .values(credits_remaining=new_balance, updated_at=datetime.utcnow())
     )
     usage = ApiKeyUsage(
         api_key_id=api_key.id,
