@@ -37,7 +37,7 @@ def run_news_monitor(self):
 
     async def _run():
         engine = get_engine()
-        async with async_session() as db:
+        async with async_session()() as db:
             result = await db.execute(
                 select(MonitoringTask).where(MonitoringTask.enabled == True)
             )
@@ -65,7 +65,7 @@ def run_full_check(self, project_id: str):
         from core.skill_engine.base import SkillContext
         from services.check.skills.selfcheck_list_skill import SelfcheckListSkill
 
-        async with async_session() as db:
+        async with async_session()() as db:
             _, tender_text, bid_text = await _get_tender_and_bid_text(project_id, db)
             if not tender_text or not bid_text:
                 return {"error": "招标文件或投标文件内容为空"}

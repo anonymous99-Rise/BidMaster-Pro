@@ -67,4 +67,22 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
+        _backfill_empty_from_env_file(_settings)
     return _settings
+
+
+def _backfill_empty_from_env_file(s: Settings) -> None:
+    """docker-compose 显式注入的空字符串 env(如容器创建时 .env 尚未恢复)会覆盖 .env 文件值，
+    这里对密钥类字段补读 .env 文件把空值填回去。"""
+    envp = Path(".env")
+    if not envp.exists():
+        return
+    vals: dict[str, str] = {}
+    for line in envp.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if line.startswith("BMP_") and "=" in line:
+            k, v = line.split("=", 1)
+            vals[k[4:].lower()] = v.strip().strip('"').strip("'")
+    for field in ("llm_api_key", "embedding_api_key", "mineru_api_key"):
+        if not getattr(s, field, "") and vals.get(field):
+            setattr(s, field, vals[field])

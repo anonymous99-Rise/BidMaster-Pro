@@ -27,7 +27,8 @@ def get_llm_gateway() -> LLMGateway:
 def set_llm_gateway_from_provider(provider: dict | None) -> None:
     """用数据库中的默认供应商配置重建运行时网关；provider 为 None 时回退到环境变量。"""
     global _gateway
-    if not provider or not (provider.get("api_key") or provider.get("api_base")):
+    # api_key 为空时必须回退环境变量,否则网关会拿 "sk-placeholder" 兜底导致 401
+    if not provider or not str(provider.get("api_key") or "").strip():
         _gateway = None
         return
     settings = get_settings()
