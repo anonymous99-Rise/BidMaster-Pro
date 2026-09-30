@@ -645,6 +645,19 @@ async def aggregate_hotspots(
             }
             yaml_sources.append(cfg)
 
+    # 1.5) 统一以 DB enabled 为准: UI 禁用的源不再抓取
+    # (source_codes/industry_code 分支读 YAML 定义,不含运行时启停状态)
+    selected_codes = [s.get("code") for s in yaml_sources if s.get("code")]
+    if selected_codes:
+        disabled_codes = set((await db.execute(
+            select(NewsSourceRegistry.code).where(
+                NewsSourceRegistry.code.in_(selected_codes),
+                NewsSourceRegistry.enabled == False,
+            )
+        )).scalars().all())
+        if disabled_codes:
+            yaml_sources = [s for s in yaml_sources if s.get("code") not in disabled_codes]
+
     if not yaml_sources:
         return {"success": True, "total": 0, "saved": 0, "items": [], "message": "无可用数据源"}
 
