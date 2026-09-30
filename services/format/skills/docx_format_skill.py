@@ -98,6 +98,7 @@ DEFAULT_FORMAT_CONFIG = {
     'table_size': 12,
     'title_line_spacing': 33,
     'subtitle_line_spacing': 33,
+    'heading_color': '000000',
     'h1_bold': True,
     'h2_bold': True,
     'h3_bold': True,
@@ -185,7 +186,7 @@ class DocxFormatSkill(Skill):
                 continue
             total_paragraphs += 1
 
-            expected_label = self._detect_heading_label(text)
+            expected_label = self._resolve_label(para, text)
             expected_rules = self._get_rules_for_label(expected_label, config)
 
             for run in para.runs:
@@ -366,7 +367,7 @@ class DocxFormatSkill(Skill):
                 continue
             stats["paragraphs"] += 1
 
-            label = self._detect_heading_label(text)
+            label = self._resolve_label(para, text)
             rules = self._get_rules_for_label(label, config)
 
             self._apply_format_to_para(para, rules, config)
@@ -455,6 +456,20 @@ class DocxFormatSkill(Skill):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def _resolve_label(self, para, text: str) -> str:
+        """段落类型判定: 先看段落样式(Heading N / Title),无样式再按文本编号猜测。
+
+        组装层产生的章标题(如"投标函")没有数字编号,纯文本猜测会误判为
+        正文,导致黑体标题被覆盖成仿宋正文字体。
+        """
+        style_name = (para.style.name or "") if para.style is not None else ""
+        sm = re.match(r'^Heading (\d+)$', style_name)
+        if sm:
+            return f"h{min(int(sm.group(1)), 8)}"
+        if style_name == "Title":
+            return "title"
+        return self._detect_heading_label(text)
+
     def _detect_heading_label(self, text: str) -> str:
         heading_format = DEFAULT_FORMAT_CONFIG.get('heading_number_format', 'decimal')
         if heading_format == 'decimal':
@@ -501,12 +516,22 @@ class DocxFormatSkill(Skill):
         return "正文"
 
     def _get_rules_for_label(self, label: str, config: dict) -> dict:
+        if label == "title":
+            return {
+                "font_name": config.get("title_font", "方正小标宋简体"),
+                "font_size": config.get("title_size", 22),
+                "bold": True,
+                "color": config.get("heading_color", "000000"),
+                "alignment": "center",
+                "first_line_indent": 0,
+            }
         if label.startswith("h"):
             level = label[1:]
             return {
                 "font_name": config.get(f"h{level}_font", config.get("body_font", "宋体")),
                 "font_size": config.get(f"h{level}_size", 12),
                 "bold": config.get(f"h{level}_bold", True),
+                "color": config.get("heading_color", "000000"),
                 "space_before": config.get(f"h{level}_space_before", 0),
                 "space_after": config.get(f"h{level}_space_after", 0),
                 "alignment": "left",
@@ -530,7 +555,7 @@ class DocxFormatSkill(Skill):
         }
 
     def _apply_format_to_para(self, para, rules: dict, config: dict):
-        from docx.shared import Pt, Cm
+        from docx.shared import Pt, Cm, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
         from docx.oxml.ns import qn
         from docx.oxml import OxmlElement
@@ -557,6 +582,9 @@ class DocxFormatSkill(Skill):
                 run.font.size = Pt(rules["font_size"])
             if "bold" in rules:
                 run.font.bold = rules["bold"]
+            if rules.get("color"):
+                # 内置 Heading 样式自带蓝色,公文标题统一覆盖为黑色
+                run.font.color.rgb = RGBColor.from_string(rules["color"])
 
         if "alignment" in rules:
             align_map = {

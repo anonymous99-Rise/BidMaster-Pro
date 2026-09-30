@@ -33,6 +33,68 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
+RE_MD_HEADING = re.compile(r'^(#{1,6})\s+(.*)')
+RE_MD_TABLE_SEP = re.compile(r'^\|?[\s:|-]+$')
+RE_MD_BOLD = re.compile(r'\*\*(.+?)\*\*')
+
+
+def _add_md_runs(para, text: str):
+    """把行内 **加粗** 语法拆成加粗/普通 run,其余文本原样写入。"""
+    pos = 0
+    for m in RE_MD_BOLD.finditer(text):
+        if m.start() > pos:
+            para.add_run(text[pos:m.start()])
+        r = para.add_run(m.group(1))
+        r.bold = True
+        pos = m.end()
+    if pos < len(text):
+        para.add_run(text[pos:])
+
+
+def _append_markdown_lines(doc, content: str):
+    """章节 markdown 正文 → docx 元素: # 标题 / | 表格 | / **加粗** / 普通段落。"""
+    lines = [ln.strip() for ln in content.split("\n")]
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line:
+            i += 1
+            continue
+
+        # markdown 表格: 表头行 + |---| 分隔行 + 数据行 → 真 docx 表格
+        if (
+            line.startswith("|") and line.endswith("|")
+            and i + 1 < len(lines)
+            and RE_MD_TABLE_SEP.match(lines[i + 1]) and "-" in lines[i + 1]
+        ):
+            rows = [line]
+            j = i + 2
+            while j < len(lines) and lines[j].startswith("|"):
+                rows.append(lines[j])
+                j += 1
+            header = [c.strip() for c in rows[0].strip("|").split("|")]
+            table = doc.add_table(rows=1, cols=len(header))
+            table.style = "Table Grid"
+            for k, val in enumerate(header):
+                table.rows[0].cells[k].text = val
+            for raw in rows[1:]:
+                cells = [c.strip() for c in raw.strip("|").split("|")]
+                row = table.add_row()
+                for k in range(len(header)):
+                    row.cells[k].text = cells[k] if k < len(cells) else ""
+            doc.add_paragraph()
+            i = j
+            continue
+
+        # 标题: 先匹配长 # 串(##### 先于 ####),级别映射到 docx heading
+        hm = RE_MD_HEADING.match(line)
+        if hm:
+            level = min(len(hm.group(1)), 5)
+            doc.add_heading(hm.group(2).strip(), level=level)
+        else:
+            _add_md_runs(doc.add_paragraph(), line)
+        i += 1
+
 
 def _save_upload(file: UploadFile, prefix: str = "") -> Path:
     if file.size and file.size > MAX_UPLOAD_BYTES:
@@ -376,24 +438,13 @@ async def format_from_project(
     style.font.name = "宋体"
     style.font.size = Pt(11)
 
-    h1 = doc.add_heading(title, level=0)
+    doc.add_heading(title, level=0)
 
     for ch in chapters:
         if not (ch.content and ch.content.strip()):
             continue
         doc.add_heading(ch.title, level=1)
-        for line in ch.content.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("## "):
-                doc.add_heading(line[3:].strip(), level=2)
-            elif line.startswith("### "):
-                doc.add_heading(line[4:].strip(), level=3)
-            elif line.startswith("# "):
-                doc.add_heading(line[2:].strip(), level=1)
-            else:
-                doc.add_paragraph(line)
+        _append_markdown_lines(doc, ch.content)
 
     output_dir = Path(tempfile.gettempdir()) / "bidmaster_format"
     output_dir.mkdir(parents=True, exist_ok=True)
