@@ -51,15 +51,122 @@ def _add_md_runs(para, text: str):
         para.add_run(text[pos:])
 
 
-def _append_markdown_lines(doc, content: str, counters: list | None = None):
+_PPR_TAG_ORDER = (
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr",
+    "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd", "tabs",
+    "suppressAutoHyphens", "kinsoku", "wordWrap", "overflowPunct",
+    "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+    "snapToGrid", "spacing", "ind", "contextualSpacing", "mirrorIndents",
+    "suppressOverlap", "jc", "textDirection", "textAlignment",
+    "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr",
+)
+
+
+def _attach_heading_auto_numbering(doc):
+    """Heading 1-5 样式绑定多级列表自动编号(WPS/Word 标题自动编号):
+    章标题 1/2/…、小节 1.1/1.1.1 由文档编号引擎维护,增删章节自动重排,
+    不在标题文本里手写编号。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    numbering = doc.part.numbering_part.element
+    abs_ids = [int(a.get(qn("w:abstractNumId")))
+               for a in numbering.findall(qn("w:abstractNum"))]
+    num_ids = [int(n.get(qn("w:numId"))) for n in numbering.findall(qn("w:num"))]
+    abstract_id = (max(abs_ids) + 1) if abs_ids else 0
+    num_id = (max(num_ids) + 1) if num_ids else 1
+
+    style_ids = ["Heading1", "Heading2", "Heading3", "Heading4", "Heading5"]
+    style_names = ["Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5"]
+    lvl_texts = ["%1", "%1.%2", "%1.%2.%3", "%1.%2.%3.%4", "%1.%2.%3.%4.%5"]
+
+    abstract = OxmlElement("w:abstractNum")
+    abstract.set(qn("w:abstractNumId"), str(abstract_id))
+    mlt = OxmlElement("w:multiLevelType")
+    mlt.set(qn("w:val"), "multilevel")
+    abstract.append(mlt)
+    for ilvl in range(5):
+        lvl = OxmlElement("w:lvl")
+        lvl.set(qn("w:ilvl"), str(ilvl))
+        start = OxmlElement("w:start")
+        start.set(qn("w:val"), "1")
+        lvl.append(start)
+        fmt = OxmlElement("w:numFmt")
+        fmt.set(qn("w:val"), "decimal")
+        lvl.append(fmt)
+        # w:lvl 子元素顺序: start, numFmt, pStyle, suff, lvlText, lvlJc, pPr
+        pstyle = OxmlElement("w:pStyle")
+        pstyle.set(qn("w:val"), style_ids[ilvl])
+        lvl.append(pstyle)
+        suff = OxmlElement("w:suff")
+        suff.set(qn("w:val"), "space")  # 编号与标题间用单个空格,不用制表位
+        lvl.append(suff)
+        lt = OxmlElement("w:lvlText")
+        lt.set(qn("w:val"), lvl_texts[ilvl])
+        lvl.append(lt)
+        jc = OxmlElement("w:lvlJc")
+        jc.set(qn("w:val"), "left")
+        lvl.append(jc)
+        ppr = OxmlElement("w:pPr")
+        ind = OxmlElement("w:ind")
+        ind.set(qn("w:left"), "0")
+        ind.set(qn("w:firstLine"), "0")
+        ppr.append(ind)
+        lvl.append(ppr)
+        abstract.append(lvl)
+
+    # schema 要求所有 abstractNum 位于 num 之前: 插到第一个 num 前,没有则追加
+    first_num = numbering.find(qn("w:num"))
+    if first_num is not None:
+        first_num.addprevious(abstract)
+    else:
+        numbering.append(abstract)
+
+    num = OxmlElement("w:num")
+    num.set(qn("w:numId"), str(num_id))
+    aref = OxmlElement("w:abstractNumId")
+    aref.set(qn("w:val"), str(abstract_id))
+    num.append(aref)
+    numbering.append(num)
+
+    for ilvl, (sid, sname) in enumerate(zip(style_ids, style_names)):
+        style = doc.styles[sname]
+        assert style.style_id == sid, f"unexpected style id {style.style_id} for {sname}"
+        ppr = style.element.get_or_add_pPr()
+        numpr = ppr.find(qn("w:numPr"))
+        if numpr is None:
+            numpr = OxmlElement("w:numPr")
+            my_idx = _PPR_TAG_ORDER.index("numPr")
+            inserted = False
+            for child in ppr:
+                tag = child.tag.rsplit("}", 1)[-1]
+                if tag in _PPR_TAG_ORDER and _PPR_TAG_ORDER.index(tag) > my_idx:
+                    child.addprevious(numpr)
+                    inserted = True
+                    break
+            if not inserted:
+                ppr.append(numpr)
+        ilvl_el = OxmlElement("w:ilvl")
+        ilvl_el.set(qn("w:val"), str(ilvl))
+        numid_el = OxmlElement("w:numId")
+        numid_el.set(qn("w:val"), str(num_id))
+        numpr.append(ilvl_el)
+        numpr.append(numid_el)
+
+
+def _append_markdown_lines(doc, content: str):
     """章节 markdown 正文 → docx 元素: # 标题 / | 表格 | / **加粗** / 普通段落。
 
-    章内 2-5 级标题统一剥离原编号并按计数器重新编号(1.1、1.1.1 起):
-    LLM 生成的内容常沿用全文连续编号(如第 4 章内容写 4.1),与文档实际章结构错位。
-    counters[0] 为章号(由调用方按当前章传入),其余为各级小节计数。
+    标题编号由 Heading 样式绑定的多级列表自动生成,这里只剥离 LLM 沿用的
+    原编号(如第 4 章内容写 4.1),避免与自动编号重复。
     """
     lines = [ln.strip() for ln in content.split("\n")]
-    counters = counters or [0, 0, 0, 0, 0]  # [章号, level2, level3, level4, level5]
+    # 层级归一化: LLM 常直接用 ### 写一级小节(跳过 ##),统计本章实际最外层
+    # 小节级别并整体上移,保证最外层小节落在 Heading2,自动编号才能是 1.1 而非 1.1.1
+    md_levels = [min(len(m.group(1)), 5) for ln in lines
+                 if (m := RE_MD_HEADING.match(ln))]
+    base = min((lv for lv in md_levels if lv >= 2), default=2)
+    shift = base - 2
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -92,18 +199,16 @@ def _append_markdown_lines(doc, content: str, counters: list | None = None):
             i = j
             continue
 
-        # 标题: 先匹配长 # 串(##### 先于 ####),级别映射到 docx heading
+        # 标题: 先匹配长 # 串(##### 先于 ####),级别归一化后映射到 docx heading
         hm = RE_MD_HEADING.match(line)
         if hm:
             level = min(len(hm.group(1)), 5)
+            if level <= 1:
+                level = 2  # 章内 # 视为一级小节(章标题由章节循环添加)
+            level = min(max(level - shift, 2), 5)
             title_text = hm.group(2).strip()
             if level >= 2:
                 title_text = re.sub(r'^\d+(\.\d+)*\s+', '', title_text)
-                counters[level - 1] += 1
-                for k in range(level, 5):
-                    counters[k] = 0
-                # 内容层级跳跃时(如无 ## 直接 ###)压缩掉为 0 的父级,避免 1.0.1 这类编号
-                title_text = f"{'.'.join(str(c) for c in counters[:level] if c > 0)} {title_text}"
             doc.add_heading(title_text, level=level)
         else:
             _add_md_runs(doc.add_paragraph(), line)
@@ -452,16 +557,16 @@ async def format_from_project(
     style.font.name = "宋体"
     style.font.size = Pt(11)
 
+    _attach_heading_auto_numbering(doc)
     doc.add_heading(title, level=0)
 
-    for ch_idx, ch in enumerate(chapters):
+    for ch in chapters:
         if not (ch.content and ch.content.strip()):
             continue
         h = doc.add_heading(ch.title, level=1)
         # 每个大章从新页开始(标书惯例)
         h.paragraph_format.page_break_before = True
-        # 章内小节编号从 章号.1 起 (如第 1 章小节 1.1)
-        _append_markdown_lines(doc, ch.content, [ch_idx + 1, 0, 0, 0, 0])
+        _append_markdown_lines(doc, ch.content)
 
     output_dir = Path(tempfile.gettempdir()) / "bidmaster_format"
     output_dir.mkdir(parents=True, exist_ok=True)
