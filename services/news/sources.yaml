@@ -33,23 +33,31 @@ government_procurement:
     description: "采购公告变更/更正信息"
 
 engineering:
-  # 2026-09-30 实测: 省级公共资源交易平台无 RSS, 改用 crawl 抓列表页
-  - name: "宁夏回族自治区公共资源交易网"
+  # 2026-09-30 实测: 新疆/宁夏站点是 Epoint WebBuilder 平台, 栏目页为 JS 壳,
+  # 静态 crawl 只能拿到占位符, 改用 epoint 类型直连其 ES 检索接口
+  # (getFullTextDataNew), categories 为叶子分类号, 走 unionCondition OR 过滤
+  - name: "宁夏回族自治区公共资源交易网-采购公告"
     code: "ggzy_ningxia"
-    type: "crawl"
-    url: "https://ggzyjy.fzggw.nx.gov.cn/"
+    type: "epoint"
+    url: "https://ggzyjy.fzggw.nx.gov.cn/dzjy/001001/001001002/001001002001/trade_infomation.html"
     industry: "01"
     weight: 1.0
     enabled: true
-    description: "宁夏公共资源交易公告(重点区域)"
-  - name: "新疆维吾尔自治区公共资源交易平台"
+    config:
+      api_path: "/interface_wz/rest/esinteligentsearch/getFullTextDataNew"
+      categories: ["001001002001", "001001002002", "001001002003"]
+    description: "宁夏政府采购项目采购公告(重点区域)"
+  - name: "新疆维吾尔自治区公共资源交易网-政府采购"
     code: "ggzy_xinjiang"
-    type: "crawl"
-    url: "https://ggzy.xinjiang.gov.cn/"
+    type: "epoint"
+    url: "https://ggzy.xinjiang.gov.cn/xinjiangggzy_new/jyxx/001004/trade_info.html"
     industry: "01"
     weight: 1.0
     enabled: true
-    description: "新疆公共资源交易公告(重点区域)"
+    config:
+      api_path: "/inteligentsearchnew/rest/esinteligentsearch/getFullTextDataNew"
+      categories: ["001004003", "001004004", "001004005"]
+    description: "新疆政府采购交易公告(重点区域)"
   - name: "全国公共资源交易平台"
     code: "ggzy_national"
     type: "rss"
@@ -126,14 +134,16 @@ tender_service:
     url: "https://www.qianlima.com/zb"
     industry: "01"
     weight: 0.7
-    enabled: true
+    # 2026-09-30 实测: 商业站反爬, 详情页 521, 非政府采购信息, 禁用
+    enabled: false
   - name: "招标网"
     code: "zhaobiao"
     type: "crawl"
     url: "https://www.zhaobiao.cn"
     industry: "01"
     weight: 0.7
-    enabled: true
+    # 2026-09-30 实测: 列表在反爬子域(zb.* 521), 非政府采购信息, 禁用
+    enabled: false
 
 enterprise_tender:
   # 2026-09 实测: chinamobile 旧版 SSL 协商被拒, chinaunicom 连接被对端重置(WAF), 禁用
@@ -157,14 +167,16 @@ enterprise_tender:
     url: "https://caigou.chinatelecom.com.cn"
     industry: "10"
     weight: 0.85
-    enabled: true
+    # 2026-09-30 实测: 首页为 JS 壳页(1.9KB)无静态链接, 静态抓取无效, 禁用
+    enabled: false
   - name: "国家电网电子商务平台"
     code: "sgcc"
     type: "crawl"
     url: "https://ecp.sgcc.com.cn"
     industry: "05"
     weight: 0.95
-    enabled: true
+    # 2026-09-30 实测: SPA 哈希路由(#/), 静态抓取无效, 禁用
+    enabled: false
   - name: "南方电网电子商务平台"
     code: "csg"
     type: "crawl"
@@ -179,7 +191,8 @@ enterprise_tender:
     url: "https://www.chd.com.cn"
     industry: "05"
     weight: 0.8
-    enabled: true
+    # 2026-09-30 实测: 首页无静态公告链接, 禁用
+    enabled: false
 
 github_monitor:
   - name: "GitHub Trending 招投标"

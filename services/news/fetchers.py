@@ -404,6 +404,98 @@ class HTMLFetcher(BaseFetcher):
         return self.RE_WS.sub(' ', text).strip()[:5000]
 
 
+class EpointFetcher(BaseFetcher):
+    """Epoint WebBuilder 政务平台 ES 检索接口抓取器 (epoint 类型)
+
+    新疆/宁夏等公共资源交易平台基于 Epoint WebBuilder: 栏目页是 JS 壳,
+    静态抓取只能拿到占位符,真实数据来自 ES 全文检索 REST 接口
+    (getFullTextDataNew)。分类过滤必须用 condition/unionCondition 携带
+    叶子分类号——cnum 字段只对顶级分类生效 (2026-09 实测)。
+
+    source_config:
+      url: 栏目页地址 (用于派生 Origin/Referer 和拼接详情链接)
+      config.api_path: ES 接口路径
+      config.categories: 叶子分类号列表 (unionCondition OR 关系)
+      config.max_items: 最多返回条数 (默认 12)
+    """
+
+    async def fetch(self, source_config: dict) -> List[NewsItem]:
+        import httpx
+        from urllib.parse import urljoin
+
+        page_url = source_config.get("url", "")
+        cfg = source_config.get("config") or {}
+        api_path = cfg.get("api_path", "")
+        categories = [c for c in (cfg.get("categories") or []) if c]
+        max_items = int(cfg.get("max_items", 12))
+        if not page_url or not api_path or not categories:
+            raise FetchError("Epoint 源缺少 url/api_path/categories 配置")
+
+        base = "/".join(page_url.split("/", 3)[:3])  # scheme://host
+        api_url = base + api_path
+        headers = {
+            "User-Agent": self.USER_AGENT,
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Content-Type": "application/json",
+            "Origin": base,
+            "Referer": page_url,
+        }
+        payload = {
+            "token": "", "pn": 0, "rn": max_items, "sdt": "", "edt": "",
+            "wd": "", "inc_wd": "", "exc_wd": "",
+            "fields": "title",
+            "cnum": "",
+            "sort": '{"webdate":"0"}',  # 按发布时间降序
+            "ssort": "title", "cl": 500, "terminal": "",
+            "condition": "[]", "time": None, "highlights": "",
+            "statistics": None,
+            "unionCondition": EpointFetcher._category_condition(categories),
+            "accuracy": "100", "noParticiple": "0",
+            "searchRange": None, "isBusiness": 1,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=25, verify=False, headers=headers) as client:
+                resp = await client.post(api_url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            raise FetchError(f"Epoint 检索接口失败: {api_url} {e}")
+
+        records = (data.get("result") or {}).get("records") or []
+        items: List[NewsItem] = []
+        for rec in records:
+            title = str(rec.get("title") or "").strip()
+            if not title:
+                continue
+            link = str(rec.get("linkurl") or "").strip()
+            items.append(NewsItem(
+                title=title[:150],
+                url=urljoin(page_url, link) if link else "",
+                source=source_config.get("name", ""),
+                pub_date=str(rec.get("webdate") or "")[:10],
+                content=str(rec.get("content") or "").strip()[:800],
+                source_code=source_config.get("code", ""),
+                industry_code=source_config.get("industry", ""),
+                extra={"fetch_type": "epoint",
+                       "categorynum": str(rec.get("categorynum") or "")},
+            ))
+        return items
+
+    @staticmethod
+    def _category_condition(categories: List[str]) -> str:
+        import json as _json
+        return _json.dumps([
+            {"equal": c, "equalList": None, "fieldName": "categorynum",
+             "notEqual": None, "notEqualList": None}
+            for c in categories
+        ], separators=(",", ":"))
+
+    USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+
 class BrowserFetcher(BaseFetcher):
     """浏览器自动化抓取器 (二期实现)"""
 
@@ -416,6 +508,7 @@ FETCHER_REGISTRY = {
     "api": APIFetcher,
     "html": HTMLFetcher,
     "crawl": HTMLFetcher,  # 同 HTML
+    "epoint": EpointFetcher,
     "browser": BrowserFetcher,
 }
 

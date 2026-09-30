@@ -51,9 +51,15 @@ def _add_md_runs(para, text: str):
         para.add_run(text[pos:])
 
 
-def _append_markdown_lines(doc, content: str):
-    """章节 markdown 正文 → docx 元素: # 标题 / | 表格 | / **加粗** / 普通段落。"""
+def _append_markdown_lines(doc, content: str, counters: list | None = None):
+    """章节 markdown 正文 → docx 元素: # 标题 / | 表格 | / **加粗** / 普通段落。
+
+    章内 2-5 级标题统一剥离原编号并按计数器重新编号(1.1、1.1.1 起):
+    LLM 生成的内容常沿用全文连续编号(如第 4 章内容写 4.1),与文档实际章结构错位。
+    counters[0] 为章号(由调用方按当前章传入),其余为各级小节计数。
+    """
     lines = [ln.strip() for ln in content.split("\n")]
+    counters = counters or [0, 0, 0, 0, 0]  # [章号, level2, level3, level4, level5]
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -90,7 +96,15 @@ def _append_markdown_lines(doc, content: str):
         hm = RE_MD_HEADING.match(line)
         if hm:
             level = min(len(hm.group(1)), 5)
-            doc.add_heading(hm.group(2).strip(), level=level)
+            title_text = hm.group(2).strip()
+            if level >= 2:
+                title_text = re.sub(r'^\d+(\.\d+)*\s+', '', title_text)
+                counters[level - 1] += 1
+                for k in range(level, 5):
+                    counters[k] = 0
+                # 内容层级跳跃时(如无 ## 直接 ###)压缩掉为 0 的父级,避免 1.0.1 这类编号
+                title_text = f"{'.'.join(str(c) for c in counters[:level] if c > 0)} {title_text}"
+            doc.add_heading(title_text, level=level)
         else:
             _add_md_runs(doc.add_paragraph(), line)
         i += 1
@@ -440,11 +454,14 @@ async def format_from_project(
 
     doc.add_heading(title, level=0)
 
-    for ch in chapters:
+    for ch_idx, ch in enumerate(chapters):
         if not (ch.content and ch.content.strip()):
             continue
-        doc.add_heading(ch.title, level=1)
-        _append_markdown_lines(doc, ch.content)
+        h = doc.add_heading(ch.title, level=1)
+        # 每个大章从新页开始(标书惯例)
+        h.paragraph_format.page_break_before = True
+        # 章内小节编号从 章号.1 起 (如第 1 章小节 1.1)
+        _append_markdown_lines(doc, ch.content, [ch_idx + 1, 0, 0, 0, 0])
 
     output_dir = Path(tempfile.gettempdir()) / "bidmaster_format"
     output_dir.mkdir(parents=True, exist_ok=True)
