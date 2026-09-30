@@ -675,6 +675,9 @@ class DocxFormatSkill(Skill):
         header_bold = config.get('table_header_bold', True)
         smart_align = config.get('table_smart_align', False)
 
+        if config.get('table_auto_col_width', True):
+            self._apply_auto_col_width(table, config)
+
         size = max(1, int(float(border_size_pt) * 8))
         tbl = table._tbl
         tbl_pr = tbl.tblPr
@@ -724,10 +727,15 @@ class DocxFormatSkill(Skill):
                         para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
                         para.paragraph_format.line_spacing = Pt(table_line_spacing)
                     if smart_align:
+                        cell_text = para.text.strip()
                         if row_idx == 0:
                             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        elif self._is_numeric_text(para.text.strip()):
-                            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        elif self._is_numeric_text(cell_text):
+                            # 短数字(序号/页码类)居中,长数字(金额/百分比)右对齐
+                            if len(cell_text) <= 4:
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            else:
+                                para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                         else:
                             para.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
@@ -737,6 +745,56 @@ class DocxFormatSkill(Skill):
         text = RE_CURRENCY_PREFIX.sub('', text)
         text = RE_CURRENCY_SUFFIX.sub('', text)
         return bool(RE_NUMERIC_TABLE_TEXT.match(text))
+
+    def _apply_auto_col_width(self, table, config: dict):
+        """按各列内容最大显示宽度加权分配表宽,序号等窄列不再均分浪费空间。
+
+        中文/全角字符按 2 个单位计。需逐 cell 设宽度并对每行生效,
+        同时关闭 autofit,否则 Word/LibreOffice 会忽略自定义列宽。
+        """
+        from docx.shared import Cm
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+
+        n_cols = len(table.columns)
+        col_lens = []
+        for col_idx in range(n_cols):
+            mx = 2
+            for row_idx, row in enumerate(table.rows):
+                try:
+                    text = row.cells[col_idx].text.strip()
+                except IndexError:
+                    continue
+                w = sum(2 if ord(ch) > 127 else 1 for ch in text)
+                if row_idx == 0 and config.get('table_header_bold', True):
+                    w = w * 1.15 + 2  # 表头加粗更宽,且避免表头折行
+                mx = max(mx, w)
+            col_lens.append(mx)
+        total = sum(col_lens)
+        if total <= 0:
+            return
+        usable_cm = 21.0 - float(config.get('margin_left', 2.5)) - float(config.get('margin_right', 2.5))
+        widths_cm = [max(1.6, round(usable_cm * cl / total, 2)) for cl in col_lens]
+        table.autofit = False
+        tbl_pr = table._tbl.tblPr
+        layout = tbl_pr.find(qn('w:tblLayout'))
+        if layout is None:
+            layout = OxmlElement('w:tblLayout')
+            tbl_pr.append(layout)
+        layout.set(qn('w:type'), 'fixed')
+        # tblGrid 的 gridCol 是 Word/LibreOffice 实际渲染的列宽,必须与 tcW 一同更新
+        grid = table._tbl.find(qn('w:tblGrid'))
+        if grid is not None:
+            for col_idx, gc in enumerate(grid.findall(qn('w:gridCol'))):
+                if col_idx < len(widths_cm):
+                    gc.set(qn('w:w'), str(int(widths_cm[col_idx] * 567)))
+        for col_idx, w_cm in enumerate(widths_cm):
+            width = Cm(w_cm)
+            for row in table.rows:
+                try:
+                    row.cells[col_idx].width = width
+                except IndexError:
+                    continue
 
     def _step_apply_heading_styles(self, content: str) -> tuple[str, int, int]:
         para_pattern = r'(<w:p[ >])(.*?)(</w:p>)'
