@@ -297,6 +297,7 @@ class HTMLFetcher(BaseFetcher):
         }
 
     async def _get(self, url: str) -> str | None:
+        import re
         import httpx
         try:
             async with httpx.AsyncClient(
@@ -304,7 +305,17 @@ class HTMLFetcher(BaseFetcher):
             ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
-                return resp.text
+                if resp.charset_encoding:
+                    return resp.content.decode(resp.charset_encoding, errors="replace")
+                # Content-Type 未声明 charset 时从 HTML meta 嗅探(httpx 不做 meta
+                # 嗅探,政府/招标站点多为 GBK/GB2312,按默认 utf-8 解码会乱码)
+                m = re.search(rb'charset\s*=\s*["\']?([A-Za-z0-9_\-]+)',
+                              resp.content[:4096], re.I)
+                encoding = m.group(1).decode("ascii", "ignore") if m else "utf-8"
+                try:
+                    return resp.content.decode(encoding, errors="replace")
+                except LookupError:  # meta 里是无效 charset 名
+                    return resp.content.decode("utf-8", errors="replace")
         except Exception:
             return None
 
