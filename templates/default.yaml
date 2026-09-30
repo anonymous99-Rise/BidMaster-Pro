@@ -42,6 +42,7 @@ subtitle_size: 16
 table_size: 12
 title_line_spacing: 33
 subtitle_line_spacing: 33
+heading_color: '000000'
 h1_bold: true
 h2_bold: true
 h3_bold: true
