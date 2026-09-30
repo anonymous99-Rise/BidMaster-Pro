@@ -7,6 +7,7 @@ import shutil
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -511,14 +512,20 @@ async def delete_template(template_name: str):
 async def download_formatted_file(path: str):
     """下载由 /format 产生的产物（限定 uploads/formatted 目录）。"""
     p = Path(path)
-    if not p.is_absolute():
-        p = (UPLOAD_DIR / path).resolve()
-    if not str(p.resolve()).startswith(str(UPLOAD_DIR.resolve())):
+    if p.is_absolute():
+        p = p.resolve()
+    else:
+        # skill 返回的 output_path 可能是 "uploads/formatted/xxx.docx" 相对路径,
+        # 也可能是纯文件名: 先按工作目录解析,不存在再退回 uploads/formatted 按文件名找
+        cand = p.resolve()
+        p = cand if cand.is_file() else (UPLOAD_DIR / p.name).resolve()
+    if not str(p).startswith(str(UPLOAD_DIR.resolve())):
         raise HTTPException(status_code=400, detail="非法路径")
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return StreamingResponse(
         p.open("rb"),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{p.name}"},
+        # RFC 5987: filename* 的值必须 percent-encode,否则中文文件名无法进 latin-1 响应头
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(p.name)}"},
     )
