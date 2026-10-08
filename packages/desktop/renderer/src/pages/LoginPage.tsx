@@ -95,7 +95,7 @@ export default function LoginPage() {
             B
           </div>
           <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#0f172a', margin: 0 }}>
-            BidMaster Pro
+            智能招投标平台
           </h1>
           <p style={{ fontSize: '14px', color: '#64748b', marginTop: '8px' }}>
             全流程智能招投标平台

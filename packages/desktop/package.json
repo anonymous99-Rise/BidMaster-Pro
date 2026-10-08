@@ -1,7 +1,7 @@
 {
   "name": "bidmaster-pro-desktop",
   "version": "2.0.2",
-  "description": "BidMaster Pro - 全流程智能招投标平台",
+  "description": "智能招投标平台 - 全流程智能招投标平台",
   "main": "main/index.js",
   "repository": {
     "type": "git",
@@ -20,7 +20,7 @@
   },
   "build": {
     "appId": "com.bidmaster.pro",
-    "productName": "BidMaster Pro",
+    "productName": "智能招投标平台",
     "directories": {
       "output": "dist"
     },

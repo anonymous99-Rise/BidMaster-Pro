@@ -1,4 +1,4 @@
-# BidMaster Pro - 全流程智能招投标平台
+# 智能招投标平台
 
 <div align="center">
 
@@ -20,7 +20,7 @@
 
 ## 📋 项目简介
 
-BidMaster Pro 是基于 AI Agent 架构的全流程智能招投标平台。通过 LLM（大语言模型）、RAG（检索增强生成）和 Skill Engine（技能引擎）三大核心引擎，实现从**招标文件解读**、**投标书自动生成**、**合规性检查**到**文档排版输出**的完整工作流自动化。
+智能招投标平台是基于 AI Agent 架构的全流程智能招投标平台。通过 LLM（大语言模型）、RAG（检索增强生成）和 Skill Engine（技能引擎）三大核心引擎，实现从**招标文件解读**、**投标书自动生成**、**合规性检查**到**文档排版输出**的完整工作流自动化。
 
 - **智能标书生成**: 自动理解招标文件，一键生成高质量投标书
 - **投标流程自动化**: 大纲生成、内容填充、格式排版一键完成
@@ -384,7 +384,7 @@ if not gate_keeper.is_passed(project_id, "interpret"):
 
 <div align="center">
 
-**Made with ❤️ by BidMaster Team**
+**Made with ❤️ by 智能招投标平台 Team**
 
 🚀 全流程智能招投标 Agent · 4 阶段流水线 · 21 项合规检查 · 多 LLM 切换 · Skill 引擎 · RAG 知识库 · MinerU OCR · 商机监控
 

@@ -1,1 +1,1 @@
-# BidMaster Pro
+# 智能招投标平台

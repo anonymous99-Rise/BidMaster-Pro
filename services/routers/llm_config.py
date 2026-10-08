@@ -602,7 +602,7 @@ async def set_default_model(config: dict, db: AsyncSession = Depends(get_db)):
 
     tmp_path = env_path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(f"# BidMaster Pro - LLM Configuration\n")
+        f.write(f"# 智能招投标平台 - LLM Configuration\n")
         f.write(f"# Last updated by set_default_model\n")
         for k, v in env_map.items():
             f.write(f"{k}={_escape_env_value(v)}\n")

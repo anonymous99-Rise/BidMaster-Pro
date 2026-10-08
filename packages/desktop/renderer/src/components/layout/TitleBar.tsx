@@ -33,7 +33,7 @@ export default function TitleBar() {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '12px' }}>
         <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-primary)' }}>
-          BidMaster Pro
+          智能招投标平台
         </span>
       </div>
       <div style={{ display: 'flex', height: '100%' }}>

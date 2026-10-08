@@ -5,7 +5,7 @@ category: output
 version: "1.0.0"
 license: MIT
 metadata:
-  author: BidMaster Pro
+  author: 智能招投标平台
   triggers:
     - 排版
     - 格式化

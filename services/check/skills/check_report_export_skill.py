@@ -115,7 +115,7 @@ class CheckReportExportSkill(Skill):
                 lines.append(f"")
 
         lines.append(f"---")
-        lines.append(f"*报告由 BidMaster Pro 自动生成*")
+        lines.append("*报告由智能招投标平台自动生成*")
 
         return "\n".join(lines)
 

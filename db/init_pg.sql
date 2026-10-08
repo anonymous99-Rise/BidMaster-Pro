@@ -1,5 +1,5 @@
 -- ============================================================
--- BidMaster Pro 数据库初始化脚本
+-- 智能招投标平台数据库初始化脚本
 -- 适配 PostgreSQL 16+
 -- ============================================================
 --
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS projects (
     user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- 项目创建者用户ID
     name VARCHAR(200) NOT NULL,                        -- 项目名称
     status VARCHAR(50) DEFAULT 'created',              -- 项目状态：created(创建)/interpreting(解读中)/analyzing(分析中)/outlining(大纲)/generating(生成中)/checking(检查中)/formatting(格式化)/completed(完成)/archived(归档)
-    tender_doc_id VARCHAR(36) REFERENCES documents(id),-- 关联的招标文件文档ID
+    tender_doc_id VARCHAR(36),                         -- 关联的招标文件文档ID（外键在 documents 创建后补加，避免循环依赖）
     config JSON,                                       -- 项目配置信息（模板选择、参数设置等）
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -148,6 +148,14 @@ COMMENT ON COLUMN documents.file_size IS '文件大小（字节）';
 COMMENT ON COLUMN documents.parsed_content IS '解析后的文本内容';
 COMMENT ON COLUMN documents.doc_metadata IS '文档元数据（页数、表格数、章节结构等）';
 COMMENT ON COLUMN documents.created_at IS '文档上传时间';
+
+-- 补加 projects.tender_doc_id 的外键（projects 与 documents 循环依赖，须待两者建完后添加）
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_projects_tender_doc') THEN
+        ALTER TABLE projects ADD CONSTRAINT fk_projects_tender_doc FOREIGN KEY (tender_doc_id) REFERENCES documents(id);
+    END IF;
+END $$;
 
 -- ============================================================
 -- 三、招标解读模块
@@ -484,20 +492,20 @@ ON CONFLICT (code) DO NOTHING;
 
 -- 管理员: 拥有所有权限
 INSERT INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT '00000000-0000-0000-rp-admin-' || p.code, r.id, p.id
+SELECT '00000000-0000-0000-rp-' || substr(md5(r.name || ':' || p.code), 1, 12), r.id, p.id
 FROM rbac_roles r, rbac_permissions p WHERE r.name = 'admin'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- 项目经理: 除 settings.rbac 和 settings.agent 外所有权限
 INSERT INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT '00000000-0000-0000-rp-mgr-' || p.code, r.id, p.id
+SELECT '00000000-0000-0000-rp-' || substr(md5(r.name || ':' || p.code), 1, 12), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'project_manager' AND p.code NOT IN ('settings.rbac', 'settings.agent')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- 撰写员: 项目读写 + 解读 + 生成 + 检查执行/导出 + 格式化执行 + 知识搜索
 INSERT INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT '00000000-0000-0000-rp-writer-' || p.code, r.id, p.id
+SELECT '00000000-0000-0000-rp-' || substr(md5(r.name || ':' || p.code), 1, 12), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'writer' AND p.code IN (
     'project.create', 'project.read', 'project.update',
@@ -511,7 +519,7 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 -- 审核员: 项目查看 + 解读查看 + 内容审核 + 检查 + 格式化
 INSERT INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT '00000000-0000-0000-rp-reviewer-' || p.code, r.id, p.id
+SELECT '00000000-0000-0000-rp-' || substr(md5(r.name || ':' || p.code), 1, 12), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'reviewer' AND p.code IN (
     'project.read',
@@ -527,7 +535,7 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 -- ============================================================
 
 INSERT INTO users (id, email, name, role, password_hash)
-VALUES ('00000000-0000-0000-0000-user00001', 'admin@bidmaster.pro', '系统管理员', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9')
+VALUES ('00000000-0000-0000-0000-user00001', 'admin@bidmaster.pro', '系统管理员', 'admin', '$2b$12$JYeICxhLZXoKe8OIzGmCU.P1xNzU/knLd.Ibq3C1VArn6OTe7ASiC')
 ON CONFLICT (email) DO NOTHING;
 
 -- 绑定管理员角色
@@ -559,4 +567,4 @@ INSERT INTO agent_configs (id, name, workflow_dsl, skills, config, enabled) VALU
 ON CONFLICT (name) DO NOTHING;
 
 -- 完成
-SELECT 'BidMaster Pro database initialized successfully!' AS message;
+SELECT '智能招投标平台 database initialized successfully!' AS message;

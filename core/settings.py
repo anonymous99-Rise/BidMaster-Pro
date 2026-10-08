@@ -6,7 +6,7 @@ from urllib.parse import quote_plus
 
 
 class Settings(BaseSettings):
-    app_name: str = "BidMaster Pro"
+    app_name: str = "智能招投标平台"
     debug: bool = True
     host: str = "0.0.0.0"
     port: int = 8000

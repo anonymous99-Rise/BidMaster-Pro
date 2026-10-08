@@ -1,5 +1,5 @@
 -- ============================================================
--- BidMaster Pro 数据库初始化脚本
+-- 智能招投标平台数据库初始化脚本
 -- 适配 MySQL 8.0+
 -- ============================================================
 --
@@ -322,16 +322,16 @@ INSERT IGNORE INTO rbac_permissions (id, code, name, category, description) VALU
 -- ============================================================
 
 INSERT IGNORE INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT CONCAT('00000000-0000-0000-rp-admin-', p.code), r.id, p.id
+SELECT CONCAT('00000000-0000-0000-rp-' , SUBSTRING(MD5(CONCAT(r.name, ':', p.code)), 1, 12)), r.id, p.id
 FROM rbac_roles r, rbac_permissions p WHERE r.name = 'admin';
 
 INSERT IGNORE INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT CONCAT('00000000-0000-0000-rp-mgr-', p.code), r.id, p.id
+SELECT CONCAT('00000000-0000-0000-rp-' , SUBSTRING(MD5(CONCAT(r.name, ':', p.code)), 1, 12)), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'project_manager' AND p.code NOT IN ('settings.rbac', 'settings.agent');
 
 INSERT IGNORE INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT CONCAT('00000000-0000-0000-rp-writer-', p.code), r.id, p.id
+SELECT CONCAT('00000000-0000-0000-rp-' , SUBSTRING(MD5(CONCAT(r.name, ':', p.code)), 1, 12)), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'writer' AND p.code IN (
     'project.create', 'project.read', 'project.update',
@@ -343,7 +343,7 @@ WHERE r.name = 'writer' AND p.code IN (
 );
 
 INSERT IGNORE INTO rbac_role_permissions (id, role_id, permission_id)
-SELECT CONCAT('00000000-0000-0000-rp-reviewer-', p.code), r.id, p.id
+SELECT CONCAT('00000000-0000-0000-rp-' , SUBSTRING(MD5(CONCAT(r.name, ':', p.code)), 1, 12)), r.id, p.id
 FROM rbac_roles r, rbac_permissions p
 WHERE r.name = 'reviewer' AND p.code IN (
     'project.read',
@@ -358,7 +358,7 @@ WHERE r.name = 'reviewer' AND p.code IN (
 -- ============================================================
 
 INSERT IGNORE INTO users (id, email, name, role, password_hash)
-VALUES ('00000000-0000-0000-0000-user00001', 'admin@bidmaster.pro', '系统管理员', 'admin', '240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9');
+VALUES ('00000000-0000-0000-0000-user00001', 'admin@bidmaster.pro', '系统管理员', 'admin', '$2b$12$JYeICxhLZXoKe8OIzGmCU.P1xNzU/knLd.Ibq3C1VArn6OTe7ASiC');
 
 INSERT IGNORE INTO rbac_user_roles (id, user_id, role_id)
 SELECT '00000000-0000-0000-ur-admin-role', u.id, r.id
@@ -385,4 +385,4 @@ INSERT IGNORE INTO agent_configs (id, name, workflow_dsl, skills, config, enable
     ('00000000-0000-0000-agent-0007', 'export', '{}', '[]',
      '{"display_name": "导出Agent", "description": "导出最终投标文件", "temperature": 0.0, "max_tokens": 2048}', TRUE);
 
-SELECT 'BidMaster Pro database initialized successfully!' AS message;
+SELECT '智能招投标平台 database initialized successfully!' AS message;

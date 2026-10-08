@@ -12,7 +12,7 @@ except ImportError:
     FastMCP = None
 
 if FastMCP is not None:
-    mcp = FastMCP("BidMaster Pro MCP Server")
+    mcp = FastMCP("智能招投标平台 MCP Server")
 else:
     class _MCPStub:
         def tool(self, *args, **kwargs):
