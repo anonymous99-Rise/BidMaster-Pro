@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 import requests
 import feedparser
 
+from services.news.field_extractor import extract_all, announce_type_from_title
+
 
 @dataclass
 class NewsItem:
@@ -27,6 +29,13 @@ class NewsItem:
     content: str = ""
     source_code: str = ""
     industry_code: str = ""
+    # 商机字段 (由 field_extractor 从详情页提取)
+    bid_deadline: str = ""
+    amount: Optional[float] = None
+    region: str = ""
+    owner_org: str = ""
+    project_code: str = ""
+    announce_type: str = "tender"  # tender/award/change/failed
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -114,7 +123,20 @@ class RSSFetcher(BaseFetcher):
                     item.content = detail_content
                     item.extra["detail_fetched"] = True
                     item.extra["content_length"] = len(detail_content)
+                    # 从详情正文提取商机字段
+                    biz = extract_all(detail_content)
+                    if biz.get("bid_deadline"):
+                        item.bid_deadline = biz["bid_deadline"]
+                    if biz.get("amount"):
+                        item.amount = biz["amount"]
+                    if biz.get("region"):
+                        item.region = biz["region"]
+                    if biz.get("owner_org"):
+                        item.owner_org = biz["owner_org"]
+                    if biz.get("project_code"):
+                        item.project_code = biz["project_code"]
 
+            item.announce_type = announce_type_from_title(item.title or "")
             items.append(item)
 
         return items
@@ -335,6 +357,8 @@ class HTMLFetcher(BaseFetcher):
         for e in entries:
             content = await self._get(e["url"]) if e["url"] else None
             text = self._extract_content(content) if content else ""
+            # 从详情正文提取商机字段 (截止时间/金额/地域/采购人/项目编号)
+            biz_fields = extract_all(text)
             items.append(NewsItem(
                 title=e["title"],
                 url=e["url"],
@@ -343,6 +367,12 @@ class HTMLFetcher(BaseFetcher):
                 content=text[:5000],
                 source_code=source_config.get("code", ""),
                 industry_code=source_config.get("industry", ""),
+                bid_deadline=biz_fields.get("bid_deadline", ""),
+                amount=biz_fields.get("amount"),
+                region=biz_fields.get("region", ""),
+                owner_org=biz_fields.get("owner_org", ""),
+                project_code=biz_fields.get("project_code", ""),
+                announce_type=announce_type_from_title(e["title"]),
                 extra={"fetch_type": "crawl"},
             ))
         return items
@@ -481,17 +511,27 @@ class EpointFetcher(BaseFetcher):
             if not title:
                 continue
             link = str(rec.get("linkurl") or "").strip()
-            items.append(NewsItem(
+            content = str(rec.get("content") or "").strip()
+            item = NewsItem(
                 title=title[:150],
                 url=urljoin(page_url, link) if link else "",
                 source=source_config.get("name", ""),
                 pub_date=str(rec.get("webdate") or "")[:10],
-                content=str(rec.get("content") or "").strip()[:800],
+                content=content[:800],
                 source_code=source_config.get("code", ""),
                 industry_code=source_config.get("industry", ""),
                 extra={"fetch_type": "epoint",
                        "categorynum": str(rec.get("categorynum") or "")},
-            ))
+            )
+            # Epoint 接口的 content 常是详情页正文片段, 尝试提取商机字段
+            biz = extract_all(content)
+            item.bid_deadline = biz.get("bid_deadline", "") or item.bid_deadline
+            item.amount = biz.get("amount") or item.amount
+            item.region = biz.get("region", "") or item.region
+            item.owner_org = biz.get("owner_org", "") or item.owner_org
+            item.project_code = biz.get("project_code", "") or item.project_code
+            item.announce_type = announce_type_from_title(title)
+            items.append(item)
         return items
 
     @staticmethod

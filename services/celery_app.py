@@ -30,22 +30,29 @@ celery_app.conf.update(
 
 @celery_app.task(name="services.celery_app.run_news_monitor", bind=True)
 def run_news_monitor(self):
-    from services.models import MonitoringTask
-    from services.database import get_engine, async_session
-    from sqlalchemy import select
+    """定时聚合采集: 每小时抓取所有 enabled 数据源并入库
+
+    此前该任务只遍历任务列表并返回 "processed",不抓任何数据,
+    导致"今日热点/推荐"完全依赖手动点击。现改为真实执行聚合。
+    """
     import asyncio
 
     async def _run():
+        from services.database import get_engine, async_session
+
         engine = get_engine()
         async with async_session()() as db:
-            result = await db.execute(
-                select(MonitoringTask).where(MonitoringTask.enabled == True)
+            from services.news.aggregate_service import run_aggregation
+
+            result = await run_aggregation(
+                db,
+                source_codes=None,     # 全部 enabled 源
+                industry_code=None,
+                company_profile=None,  # 系统级定时采集, 无用户画像
+                persist=True,
             )
-            tasks = result.scalars().all()
-            results = []
-            for task in tasks:
-                results.append({"task_id": str(task.id), "name": task.name, "status": "processed"})
-            return results
+            await db.commit()
+            return result
 
     loop = asyncio.new_event_loop()
     try:

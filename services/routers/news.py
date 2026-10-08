@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, date
 
@@ -16,7 +15,7 @@ from core.skill_engine.base import SkillContext
 from services.middleware.rbac_middleware import get_current_user_optional
 from services.middleware.api_key import require_any_auth, AuthPrincipal
 from services.news.skills.news_crawler_skill import NewsCrawlerSkill
-from services.news.source_registry import get_sources_by_codes
+from services.news.source_registry import resolve_task_sites
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -169,35 +168,13 @@ async def run_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="监控任务不存在")
 
-    from services.news.source_registry import get_sources_by_codes  # 已顶部导入,保留兼容
-
-    # 解析 sites: 兼容 code 列表 (来自 4 步创建向导) 和 URL 列表 (旧格式)
-    # - 先尝试按 code 解析
-    # - API 类型源 (type=api) 跳过: NewsCrawlerSkill 是 HTML 抓取器,不处理 JSON API
-    # - 解析不到的 (例如纯 URL 字符串) 直接当作 URL
-    sites = task.sites or []
-    source_by_code = {s.get("code"): s for s in get_sources_by_codes(sites)}
-    resolved_urls: list[str] = []
-    unresolved: list[str] = []
-    skipped_api: list[str] = []
-    for s in sites:
-        if not isinstance(s, str):
-            continue
-        if s in source_by_code:
-            src = source_by_code[s]
-            src_type = (src.get("type") or "rss").lower()
-            if src_type == "api":
-                # API 类型源不在监控任务里抓取 (走聚合流程)
-                skipped_api.append(s)
-                continue
-            url = src.get("url", "")
-            if url:
-                resolved_urls.append(url)
-        elif s.startswith(("http://", "https://")):
-            # 旧格式: 直接是 URL (假定为 HTML 页面)
-            resolved_urls.append(s)
-        else:
-            unresolved.append(s)
+    # 解析 sites: 兼容 code 列表 (4 步向导) 和 URL 列表 (旧格式), 逻辑与 refresh-hot 共用
+    resolved = resolve_task_sites(task.sites)
+    resolved_urls, unresolved, skipped_api = (
+        resolved["urls"],
+        resolved["unresolved"],
+        resolved["skipped_api"],
+    )
     if unresolved:
         logger.warning(
             f"监控任务 {task_id} 中 {len(unresolved)} 个 site 既不是合法 code 也不是 URL,已忽略: {unresolved[:5]}"
@@ -260,22 +237,9 @@ async def semantic_filter_results(
 
     crawler_skill = NewsCrawlerSkill()
     gateway = get_llm_gateway()
-    # 同样解析 sites: code -> URL
-    sites = task.sites or []
-    source_by_code = {s.get("code"): s for s in get_sources_by_codes(sites)}
-    resolved_urls: list[str] = []
-    for s in sites:
-        if not isinstance(s, str):
-            continue
-        if s in source_by_code:
-            src = source_by_code[s]
-            if (src.get("type") or "rss").lower() == "api":
-                continue  # API 源不在监控任务里处理
-            url = src.get("url", "")
-            if url:
-                resolved_urls.append(url)
-        elif s.startswith(("http://", "https://")):
-            resolved_urls.append(s)
+    # 解析 sites (code -> URL), 与 /tasks/{id}/run 共用 helper
+    resolved = resolve_task_sites(task.sites)
+    resolved_urls = resolved["urls"]
 
     ctx = SkillContext(
         project_id="",
@@ -483,6 +447,17 @@ async def refresh_today_hot(db: AsyncSession = Depends(get_db)):
         try:
             from services.news.skills.news_crawler_skill import NewsCrawlerSkill
 
+            resolved = resolve_task_sites(task.sites)
+            sites = resolved["urls"]
+            if resolved["unresolved"]:
+                logger.warning(
+                    f"刷新任务 {task.id} 忽略非法 site: {resolved['unresolved'][:5]}"
+                )
+            if resolved["skipped_api"]:
+                logger.info(
+                    f"刷新任务 {task.id} 跳过 API 类型源: {resolved['skipped_api'][:5]}"
+                )
+
             skill = NewsCrawlerSkill()
             ctx = SkillContext(
                 project_id="",
@@ -493,7 +468,7 @@ async def refresh_today_hot(db: AsyncSession = Depends(get_db)):
                     "keywords": task.keywords,
                     "exclude_keywords": task.exclude_keywords,
                     "must_contain_keywords": task.must_contain_keywords,
-                    "sites": task.sites,
+                    "sites": sites,
                     "max_pages": 2,
                 },
             )
@@ -618,94 +593,20 @@ async def aggregate_hotspots(
     - source_codes 为空时,默认抓取所有 enabled 源
     - industry_code 配合 source_codes 进一步筛选
     - persist=True 时,结果写库 (HotspotItem)
+    与 Celery 定时采集共用 aggregate_service.run_aggregation。
     """
-    from services.news.source_registry import get_sources_by_codes, get_sources_by_industry
-    from services.news.fetchers import get_fetcher
-    from services.news.skills.hotspot_aggregate_skill import HotspotAggregateSkill
+    from services.news.aggregate_service import run_aggregation
 
-    # 1) 选择数据源
-    if req.source_codes:
-        yaml_sources = get_sources_by_codes(req.source_codes)
-    elif req.industry_code:
-        yaml_sources = get_sources_by_industry(req.industry_code)
-    else:
-        yaml_sources = []
-        enabled_rows = (await db.execute(
-            select(NewsSourceRegistry).where(NewsSourceRegistry.enabled == True)
-        )).scalars().all()
-        for r in enabled_rows:
-            cfg = {
-                "name": r.name,
-                "code": r.code,
-                "type": r.type,
-                "url": r.url,
-                "industry": r.industry_code,
-                "weight": r.weight,
-                "config": r.extra_config or {},
-            }
-            yaml_sources.append(cfg)
-
-    # 1.5) 统一以 DB enabled 为准: UI 禁用的源不再抓取
-    # (source_codes/industry_code 分支读 YAML 定义,不含运行时启停状态)
-    selected_codes = [s.get("code") for s in yaml_sources if s.get("code")]
-    if selected_codes:
-        disabled_codes = set((await db.execute(
-            select(NewsSourceRegistry.code).where(
-                NewsSourceRegistry.code.in_(selected_codes),
-                NewsSourceRegistry.enabled == False,
-            )
-        )).scalars().all())
-        if disabled_codes:
-            yaml_sources = [s for s in yaml_sources if s.get("code") not in disabled_codes]
-
-    if not yaml_sources:
-        return {"success": True, "total": 0, "saved": 0, "items": [], "message": "无可用数据源"}
-
-    # 2) 抓取 (并发但限并发数)
-    all_items: list[dict] = []
-    errors: list[dict] = []
-    sem = asyncio.Semaphore(4)
-
-    async def _one(src: dict) -> list[dict]:
-        async with sem:
-            try:
-                fetcher = get_fetcher(src.get("type", "rss"))
-                items = await fetcher.fetch(src)
-                return [it.to_dict() for it in items]
-            except Exception as e:
-                errors.append({"code": src.get("code", ""), "error": str(e)})
-                return []
-
-    results = await asyncio.gather(*[_one(s) for s in yaml_sources])
-    for r in results:
-        all_items.extend(r)
-
-    # 3) 走聚合 Skill (去重+分类+评分+入库)
-    gateway = get_llm_gateway()
-    skill = HotspotAggregateSkill()
-    ctx = SkillContext(
-        project_id="",
-        db=db,
-        llm=gateway,
-        parameters={
-            "items": all_items,
-            "company_profile": req.company_profile or {},
-            "is_hot_threshold": req.is_hot_threshold,
-            "persist": req.persist,
-        },
+    result = await run_aggregation(
+        db,
+        source_codes=req.source_codes,
+        industry_code=req.industry_code,
+        company_profile=req.company_profile,
+        is_hot_threshold=req.is_hot_threshold,
+        persist=req.persist,
     )
-    skill_result = await skill.safe_execute(ctx)
     await db.commit()
-
-    data = skill_result.data or {}
-    return {
-        "success": skill_result.success,
-        "total": data.get("total", 0),
-        "saved": data.get("saved", 0),
-        "items": data.get("items", []),
-        "errors": errors,
-        "error": skill_result.error,
-    }
+    return result
 
 
 @router.get("/hotspots")

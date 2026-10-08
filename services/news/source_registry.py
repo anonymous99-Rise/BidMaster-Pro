@@ -74,6 +74,44 @@ def get_source_by_code(code: str) -> Optional[dict]:
     return None
 
 
+def resolve_task_sites(sites: list) -> dict:
+    """把监控任务的 sites(源代码列表/URL 列表混合)解析为可抓取的 URL 列表。
+
+    与 /tasks/{id}/run 的解析逻辑保持一致, 供 refresh-hot 等复用:
+    - 能匹配到数据源代码 → 取其 url
+    - http(s):// 开头 → 视为 URL 原样保留
+    - API 类型源跳过 (NewsCrawlerSkill 是 HTML 抓取器, 不处理 JSON API)
+    - 其余无效项忽略
+    """
+    from services.news.fetchers import get_fetcher  # noqa: F401  (保留一致性)
+
+    source_by_code = {s.get("code"): s for s in get_sources_by_codes(sites)}
+    resolved_urls: list[str] = []
+    unresolved: list[str] = []
+    skipped_api: list[str] = []
+    for s in sites or []:
+        if not isinstance(s, str):
+            continue
+        if s in source_by_code:
+            src = source_by_code[s]
+            src_type = (src.get("type") or "rss").lower()
+            if src_type == "api":
+                skipped_api.append(s)
+                continue
+            url = src.get("url", "")
+            if url:
+                resolved_urls.append(url)
+        elif s.startswith(("http://", "https://")):
+            resolved_urls.append(s)
+        else:
+            unresolved.append(s)
+    return {
+        "urls": resolved_urls,
+        "unresolved": unresolved,
+        "skipped_api": skipped_api,
+    }
+
+
 async def sync_sources_to_db(db: AsyncSession) -> int:
     """启动时同步 YAML -> 数据库 (幂等)
 
