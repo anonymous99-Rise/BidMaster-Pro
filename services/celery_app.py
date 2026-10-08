@@ -38,17 +38,26 @@ def run_news_monitor(self):
     import asyncio
 
     async def _run():
+        from sqlalchemy import select
         from services.database import get_engine, async_session
+        from services.models import CompanyProfile
 
         engine = get_engine()
         async with async_session()() as db:
             from services.news.aggregate_service import run_aggregation
 
+            # 定时采集自动带上已保存的公司画像, 让评分贴合企业业务偏好
+            prof_result = await db.execute(
+                select(CompanyProfile).where(CompanyProfile.name == "default")
+            )
+            prof_row = prof_result.scalar_one_or_none()
+            company_profile = prof_row.profile_data if prof_row and prof_row.profile_data else None
+
             result = await run_aggregation(
                 db,
                 source_codes=None,     # 全部 enabled 源
                 industry_code=None,
-                company_profile=None,  # 系统级定时采集, 无用户画像
+                company_profile=company_profile,
                 persist=True,
             )
             await db.commit()

@@ -4,7 +4,7 @@ import logging
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy import event
+from sqlalchemy import event, text
 from core.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -63,6 +63,14 @@ def is_db_ready() -> bool:
     return _db_ready
 
 
+# 已有表的新增列 (create_all 只建新表, 不会给已存在的表加列, 需手动幂等补齐)
+_SCHEMA_EXTRA_COLUMNS = {
+    "hotspot_items": [
+        ("announce_type", "VARCHAR(20) DEFAULT 'tender'"),
+    ],
+}
+
+
 async def init_db():
     global _db_ready
     from services.models import Base
@@ -70,6 +78,14 @@ async def init_db():
         engine = get_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # 幂等补齐旧表新增列 (PostgreSQL / MySQL 均支持 ADD COLUMN IF NOT EXISTS)
+            for table, cols in _SCHEMA_EXTRA_COLUMNS.items():
+                for col_name, col_type in cols:
+                    ddl = f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}'
+                    try:
+                        await conn.execute(text(ddl))
+                    except Exception as e:
+                        logger.warning(f"补充列 {table}.{col_name} 失败 (忽略): {e}")
         _db_ready = True
         logger.info("数据库初始化成功")
     except Exception as e:

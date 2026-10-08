@@ -191,6 +191,7 @@ class HotspotAggregateSkill(Skill):
                         source_code=sanitize_for_mysql(it.get("source_code", ""))[:100],
                         industry_code=it.get("industry_code", "12"),
                         region=sanitize_for_mysql(it.get("region", ""))[:50],
+                        announce_type=it.get("announce_type", "tender") or "tender",
                         amount=float(it.get("amount") or 0),
                         bid_deadline=it.get("bid_deadline", "") or "",
                         owner_org=sanitize_for_mysql(it.get("owner_org", ""))[:200],

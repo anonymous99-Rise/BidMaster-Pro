@@ -208,6 +208,28 @@ class AgentConfig(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CompanyProfile(Base):
+    """公司画像 (业务偏好, 单行配置)
+
+    profile_data 结构:
+    {
+        "company_name": "××建设集团有限公司",
+        "industries": ["03", "05"],     # 行业 code (与 sources/industry 树一致)
+        "keywords": ["市政", "桥梁", "绿化"],
+        "regions": ["安徽", "浙江"],
+        "min_amount": 10.0,              # 万元
+        "max_amount": 5000.0,            # 万元
+    }
+    采集聚合 (aggregate) 时若无显式画像, 会自动读取本表注入评分。
+    """
+    __tablename__ = "company_profiles"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    name = Column(String(100), unique=True, nullable=False, default="default")
+    profile_data = Column(JSON, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Notification(Base):
     __tablename__ = "notifications"
 
@@ -358,6 +380,7 @@ class HotspotItem(Base):
     bid_deadline = Column(String(50), default="")
     owner_org = Column(String(200), default="")
     project_code = Column(String(100), default="", index=True)
+    announce_type = Column(String(20), default="tender", index=True)
     fingerprint = Column(String(255), default="", index=True)
     extra = Column(JSON, default=dict)
 

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Settings, Loader2, CheckCircle2, XCircle, Bot, Save, RotateCcw, ChevronDown, ChevronRight, Cpu, Shield, Plus, Trash2, Users, UserPlus, X, ScanLine, Eye, EyeOff, Cloud, Server, Zap, Edit2 } from 'lucide-react';
-import { llmApi, skillApi, rbacApi, mineruApi, type MinerUConfig } from '../services/api';
+import { Settings, Loader2, CheckCircle2, XCircle, Bot, Save, RotateCcw, ChevronDown, ChevronRight, Cpu, Shield, Plus, Trash2, Users, UserPlus, X, ScanLine, Eye, EyeOff, Cloud, Server, Zap, Edit2, Building2, Target } from 'lucide-react';
+import { llmApi, skillApi, rbacApi, mineruApi, newsApi, type MinerUConfig, type Industry, type CompanyProfileData } from '../services/api';
 
-type SettingsTab = 'agents' | 'llm' | 'rbac' | 'skills' | 'mineru';
+type SettingsTab = 'agents' | 'llm' | 'rbac' | 'skills' | 'mineru' | 'profile';
 
 interface AgentModel {
   name: string;
@@ -123,6 +123,14 @@ export default function SettingsPage() {
   const [mineruTestResult, setMineruTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [mineruMessage, setMineruMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showMineruKey, setShowMineruKey] = useState(false);
+
+  const [industries, setIndustries] = useState<Industry[]>([]);
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfileData>({});
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [profileKeywordsText, setProfileKeywordsText] = useState('');
+  const [profileRegionsText, setProfileRegionsText] = useState('');
 
   const loadData = useCallback(async () => {
     try {
@@ -401,6 +409,63 @@ export default function SettingsPage() {
       loadMineruConfig();
     }
   }, [activeTab, loadMineruConfig]);
+
+  const loadCompanyProfile = useCallback(async () => {
+    setProfileLoading(true);
+    setProfileMessage(null);
+    try {
+      const [profileRes, industriesRes] = await Promise.allSettled([
+        newsApi.getCompanyProfile(),
+        newsApi.listIndustries(),
+      ]);
+      if (profileRes.status === 'fulfilled') {
+        const p = profileRes.value.data.profile || {};
+        setCompanyProfile(p);
+        setProfileKeywordsText((p.keywords || []).join('、'));
+        setProfileRegionsText((p.regions || []).join('、'));
+      }
+      if (industriesRes.status === 'fulfilled') {
+        setIndustries(industriesRes.value.data.industries || []);
+      }
+    } catch (e: unknown) {
+      setProfileMessage({ type: 'error', text: e instanceof Error ? e.message : '加载公司画像失败' });
+    } finally {
+      setProfileLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'profile') {
+      loadCompanyProfile();
+    }
+  }, [activeTab, loadCompanyProfile]);
+
+  const handleSaveCompanyProfile = async () => {
+    setProfileSaving(true);
+    setProfileMessage(null);
+    try {
+      const payload: CompanyProfileData = {
+        ...companyProfile,
+        keywords: profileKeywordsText.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean),
+        regions: profileRegionsText.split(/[、,，\s]+/).map(s => s.trim()).filter(Boolean),
+      };
+      const res = await newsApi.saveCompanyProfile(payload);
+      setCompanyProfile(res.data.profile || payload);
+      setProfileMessage({ type: 'success', text: '公司画像已保存' });
+    } catch (e: unknown) {
+      setProfileMessage({ type: 'error', text: e instanceof Error ? e.message : '保存失败' });
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const toggleProfileIndustry = (code: string) => {
+    setCompanyProfile(prev => {
+      const cur = prev.industries || [];
+      const next = cur.includes(code) ? cur.filter(c => c !== code) : [...cur, code];
+      return { ...prev, industries: next };
+    });
+  };
 
   const handleSaveMineru = async () => {
     setMineruSaving(true);
@@ -1973,6 +2038,212 @@ export default function SettingsPage() {
     </div>
   );
 
+  const renderProfileTab = () => (
+    <div>
+      {profileMessage && (
+        <div style={{
+          marginBottom: '12px',
+          padding: '8px 12px',
+          borderRadius: '6px',
+          fontSize: '13px',
+          background: profileMessage.type === 'success' ? '#ecfdf5' : '#fef2f2',
+          color: profileMessage.type === 'success' ? '#059669' : '#dc2626',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}>
+          <span>{profileMessage.text}</span>
+          <button onClick={() => setProfileMessage(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px' }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {profileLoading ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '40px', fontSize: '13px', color: 'var(--color-text-secondary)' }}>
+          <Loader2 size={14} className="animate-spin" /> 加载中...
+        </div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          <div style={{ background: 'var(--color-surface)', borderRadius: '12px', padding: '24px', border: '1px solid var(--color-border)' }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Building2 size={16} color="var(--color-primary)" /> 公司基础信息
+            </h3>
+            <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', marginBottom: '16px' }}>
+              用于偏好行业/区域的招标商机智能评分匹配（单位：万元）
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>公司名称</label>
+                <input
+                  type="text"
+                  value={companyProfile.company_name || ''}
+                  onChange={(e) => setCompanyProfile(prev => ({ ...prev, company_name: e.target.value }))}
+                  placeholder="如: ××建设集团有限公司"
+                  style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>
+                  关注行业 <span style={{ color: '#94a3b8' }}>(多选)</span>
+                </label>
+                <div style={{ border: '1px solid var(--color-border)', borderRadius: '8px', padding: '10px', maxHeight: '260px', overflowY: 'auto' }}>
+                  {industries.map(cat => {
+                    const selectedCat = (companyProfile.industries || []).includes(cat.code);
+                    const selectedSubs = (cat.children || []).filter(sub => (companyProfile.industries || []).includes(sub.code));
+                    return (
+                      <div key={cat.code} style={{ marginBottom: '8px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 500 }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedCat}
+                            onChange={() => toggleProfileIndustry(cat.code)}
+                            style={{ width: '14px', height: '14px', cursor: 'pointer' }}
+                          />
+                          {cat.icon} {cat.name}
+                        </label>
+                        {selectedCat || selectedSubs.length > 0 ? (
+                          <div style={{ marginLeft: '24px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            {(cat.children || []).map(sub => (
+                              <label key={sub.code} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={(companyProfile.industries || []).includes(sub.code)}
+                                  onChange={() => toggleProfileIndustry(sub.code)}
+                                  style={{ width: '13px', height: '13px', cursor: 'pointer' }}
+                                />
+                                {sub.name}
+                              </label>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ marginLeft: '22px', marginTop: '2px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            {(cat.children || []).slice(0, 3).map(sub => (
+                              <label key={sub.code} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={(companyProfile.industries || []).includes(sub.code)}
+                                  onChange={() => toggleProfileIndustry(sub.code)}
+                                  style={{ width: '13px', height: '13px', cursor: 'pointer' }}
+                                />
+                                {sub.name}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {profileKeywordsText && (
+                <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                  已选行业: {(companyProfile.industries || []).map(code => {
+                    for (const cat of industries) {
+                      if (cat.code === code) return `${cat.icon}${cat.name}`;
+                      for (const sub of cat.children || []) if (sub.code === code) return `${sub.name}`;
+                    }
+                    return code;
+                  }).join('、') || '无'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ background: 'var(--color-surface)', borderRadius: '12px', padding: '24px', border: '1px solid var(--color-border)' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Target size={16} color="var(--color-primary)" /> 偏好设置
+              </h3>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>
+                    关键词 <span style={{ color: '#94a3b8' }}>(用、或逗号分隔)</span>
+                  </label>
+                  <textarea
+                    value={profileKeywordsText}
+                    onChange={(e) => setProfileKeywordsText(e.target.value)}
+                    placeholder="如: 市政、桥梁、绿化、道路养护"
+                    rows={3}
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box', resize: 'vertical' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>
+                    关注区域 <span style={{ color: '#94a3b8' }}>(省份/城市，用、或逗号分隔)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={profileRegionsText}
+                    onChange={(e) => setProfileRegionsText(e.target.value)}
+                    placeholder="如: 安徽、浙江、江苏"
+                    style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>最低金额 (万元)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={companyProfile.min_amount ?? ''}
+                      onChange={(e) => setCompanyProfile(prev => ({ ...prev, min_amount: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                      placeholder="如: 10"
+                      style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--color-text-secondary)', display: 'block', marginBottom: '4px' }}>最高金额 (万元)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={companyProfile.max_amount ?? ''}
+                      onChange={(e) => setCompanyProfile(prev => ({ ...prev, max_amount: e.target.value === '' ? undefined : Number(e.target.value) }))}
+                      placeholder="如: 5000"
+                      style={{ width: '100%', padding: '8px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '14px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#94a3b8', background: '#f8fafc', padding: '8px 12px', borderRadius: '6px', lineHeight: '1.7' }}>
+                  说明: 聚合评分会结合行业、关键词、区域、金额区间对商机打分(权重 行业30%/关键词/区域15%/金额20%/时效15%)，高分自动标记「热点」，未配置时智能推荐为综合高分排序。
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={handleSaveCompanyProfile}
+                disabled={profileSaving}
+                style={{
+                  padding: '8px 20px',
+                  background: profileSaving ? '#94a3b8' : '#059669',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: profileSaving ? 'not-allowed' : 'pointer',
+                  fontSize: '13px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                {profileSaving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                {profileSaving ? '保存中...' : '保存公司画像'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const renderSkillsTab = () => (
     <div style={{ background: 'var(--color-surface)', borderRadius: '12px', padding: '24px', border: '1px solid var(--color-border)' }}>
       <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '16px' }}>已注册 Skill ({skills.length})</h3>
@@ -2247,6 +2518,7 @@ export default function SettingsPage() {
         {([
           { key: 'agents' as SettingsTab, label: '智能体模型配置', icon: <Bot size={14} /> },
           { key: 'llm' as SettingsTab, label: 'LLM供应商', icon: <Cpu size={14} /> },
+          { key: 'profile' as SettingsTab, label: '公司画像', icon: <Target size={14} /> },
           { key: 'mineru' as SettingsTab, label: 'MinerU OCR', icon: <ScanLine size={14} /> },
           { key: 'rbac' as SettingsTab, label: '权限管理', icon: <Shield size={14} /> },
           { key: 'skills' as SettingsTab, label: 'Skill管理', icon: <Settings size={14} /> },
@@ -2275,6 +2547,7 @@ export default function SettingsPage() {
 
       {activeTab === 'llm' && renderLLMTab()}
       {activeTab === 'agents' && renderAgentsTab()}
+      {activeTab === 'profile' && renderProfileTab()}
       {activeTab === 'mineru' && renderMineruTab()}
       {activeTab === 'rbac' && renderRbacTab()}
       {activeTab === 'skills' && renderSkillsTab()}

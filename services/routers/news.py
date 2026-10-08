@@ -582,6 +582,47 @@ class AggregateRequest(BaseModel):
     persist: bool = True
 
 
+@router.get("/company-profile")
+async def get_company_profile(
+    db: AsyncSession = Depends(get_db),
+    _principal: AuthPrincipal = Depends(require_any_auth),
+):
+    """读取公司画像 (未配置返回空结构)"""
+    from services.models import CompanyProfile
+
+    result = await db.execute(
+        select(CompanyProfile).where(CompanyProfile.name == "default")
+    )
+    row = result.scalar_one_or_none()
+    return {"success": True, "profile": row.profile_data if row else {}}
+
+
+class CompanyProfileBody(BaseModel):
+    profile: dict
+
+
+@router.put("/company-profile")
+async def update_company_profile(
+    body: CompanyProfileBody,
+    db: AsyncSession = Depends(get_db),
+    _principal: AuthPrincipal = Depends(require_any_auth),
+):
+    """保存公司画像 (upsert 单行 default)"""
+    from services.models import CompanyProfile
+
+    result = await db.execute(
+        select(CompanyProfile).where(CompanyProfile.name == "default")
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        row = CompanyProfile(name="default", profile_data=body.profile)
+        db.add(row)
+    else:
+        row.profile_data = body.profile
+    await db.commit()
+    return {"success": True, "profile": row.profile_data}
+
+
 @router.post("/aggregate")
 async def aggregate_hotspots(
     req: AggregateRequest,
@@ -592,10 +633,22 @@ async def aggregate_hotspots(
 
     - source_codes 为空时,默认抓取所有 enabled 源
     - industry_code 配合 source_codes 进一步筛选
+    - company_profile 未传时自动读取已保存的公司画像
     - persist=True 时,结果写库 (HotspotItem)
     与 Celery 定时采集共用 aggregate_service.run_aggregation。
     """
     from services.news.aggregate_service import run_aggregation
+
+    # 未显式传画像 → 读取已保存的公司画像
+    if not req.company_profile:
+        from services.models import CompanyProfile
+
+        prof_result = await db.execute(
+            select(CompanyProfile).where(CompanyProfile.name == "default")
+        )
+        prof_row = prof_result.scalar_one_or_none()
+        if prof_row and prof_row.profile_data:
+            req.company_profile = prof_row.profile_data
 
     result = await run_aggregation(
         db,
@@ -611,11 +664,12 @@ async def aggregate_hotspots(
 
 @router.get("/hotspots")
 async def list_hotspots(
-    industry_code: str | None = Query(None, description="行业 code"),
+    industry_code: str | None = Query(None, description="行业分类"),
     region: str | None = Query(None, description="地域关键词"),
     min_score: float = Query(0.0, description="最低综合分"),
     is_hot: bool | None = Query(None),
     keyword: str | None = Query(None, description="标题/内容关键词"),
+    announce_type: str | None = Query(None, description="公告类型: tender/award/change/failed"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -631,6 +685,8 @@ async def list_hotspots(
         conditions.append(HotspotItem.score_total >= min_score)
     if is_hot is not None:
         conditions.append(HotspotItem.is_hot == is_hot)
+    if announce_type and announce_type != "all":
+        conditions.append(HotspotItem.announce_type == announce_type)
     if keyword:
         kw = f"%{keyword}%"
         conditions.append(or_(HotspotItem.title.like(kw), HotspotItem.content.like(kw)))
@@ -667,6 +723,7 @@ async def list_hotspots(
                 "bid_deadline": r.bid_deadline,
                 "owner_org": r.owner_org,
                 "project_code": r.project_code,
+                "announce_type": r.announce_type,
                 "score_total": r.score_total,
                 "is_hot": r.is_hot,
                 "is_converted": r.is_converted,

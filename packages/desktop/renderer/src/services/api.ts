@@ -531,6 +531,10 @@ export const newsApi = {
   syncSources: () => api.post<{ success: boolean; synced: number; message: string }>('/news/sources/sync'),
   toggleSource: (code: string, enabled: boolean) =>
     api.patch<{ success: boolean; code: string; enabled: boolean }>(`/news/sources/${code}`, { enabled }),
+  getCompanyProfile: () =>
+    api.get<{ success: boolean; profile: CompanyProfileData }>('/news/company-profile'),
+  saveCompanyProfile: (profile: CompanyProfileData) =>
+    api.put<{ success: boolean; profile: CompanyProfileData }>('/news/company-profile', { profile }),
   aggregate: (payload: {
     source_codes?: string[];
     industry_code?: string;
@@ -543,6 +547,7 @@ export const newsApi = {
     region?: string;
     min_score?: number;
     is_hot?: boolean;
+    announce_type?: string;
     keyword?: string;
     limit?: number;
     offset?: number;
@@ -578,6 +583,15 @@ export interface NewsSource {
   last_status: string;
 }
 
+export interface CompanyProfileData {
+  company_name?: string;
+  industries?: string[];
+  keywords?: string[];
+  regions?: string[];
+  min_amount?: number;
+  max_amount?: number;
+}
+
 export interface Hotspot {
   id: string;
   title: string;
@@ -591,6 +605,7 @@ export interface Hotspot {
   bid_deadline: string;
   owner_org: string;
   project_code: string;
+  announce_type: string;
   score_total: number;
   is_hot: boolean;
   is_converted: boolean;

@@ -94,6 +94,7 @@ export default function NewsPage() {
     industry_code: 'all' as string,
     min_score: 0,
     is_hot: undefined as boolean | undefined,
+    announce_type: 'all' as string,
     keyword: '',
   });
   const [scoreDetail, setScoreDetail] = useState<HotspotScoreDetail | null>(null);
@@ -132,10 +133,10 @@ export default function NewsPage() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (hotspotFilter.industry_code !== 'all' || hotspotFilter.min_score > 0 || hotspotFilter.is_hot !== undefined) {
+    if (hotspotFilter.industry_code !== 'all' || hotspotFilter.min_score > 0 || hotspotFilter.is_hot !== undefined || hotspotFilter.announce_type !== 'all') {
       loadHotspots();
     }
-  }, [hotspotFilter.industry_code, hotspotFilter.min_score, hotspotFilter.is_hot]);
+  }, [hotspotFilter.industry_code, hotspotFilter.min_score, hotspotFilter.is_hot, hotspotFilter.announce_type]);
 
   // 关键词搜索防抖 (500ms)
   const keywordDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -343,13 +344,14 @@ export default function NewsPage() {
     }
   };
 
-  const loadHotspots = async () => {
+  const loadHotspots = async (): Promise<void> => {
     setHotspotsLoading(true);
     try {
       const params: Record<string, unknown> = { limit: 50 };
       if (hotspotFilter.industry_code !== 'all') params.industry_code = hotspotFilter.industry_code;
       if (hotspotFilter.min_score > 0) params.min_score = hotspotFilter.min_score;
       if (hotspotFilter.is_hot !== undefined) params.is_hot = hotspotFilter.is_hot;
+      if (hotspotFilter.announce_type !== 'all') params.announce_type = hotspotFilter.announce_type;
       if (hotspotFilter.keyword.trim()) params.keyword = hotspotFilter.keyword.trim();
       const res = await newsApi.listHotspots(params);
       setHotspots(res.data.items || []);
@@ -521,6 +523,23 @@ export default function NewsPage() {
       }
     }
     return code;
+  };
+
+  const ANNOUNCE_TYPE_STYLE: Record<string, { bg: string; color: string }> = {
+    tender: { bg: '#eff6ff', color: '#2563eb' },
+    award: { bg: '#f0fdf4', color: '#16a34a' },
+    change: { bg: '#fff7ed', color: '#ea580c' },
+    failed: { bg: '#fef2f2', color: '#dc2626' },
+  };
+
+  const getAnnounceTypeName = (type: string): string => {
+    const map: Record<string, string> = {
+      tender: '招标公告',
+      award: '中标/成交',
+      change: '更正/变更',
+      failed: '流标/废标',
+    };
+    return map[type] || type || '';
   };
 
   const getCategoryBadge = (category: string) => {
@@ -1168,6 +1187,17 @@ export default function NewsPage() {
             <option value="hot">仅热点</option>
             <option value="normal">非热点</option>
           </select>
+          <select
+            value={hotspotFilter.announce_type}
+            onChange={(e) => setHotspotFilter({ ...hotspotFilter, announce_type: e.target.value })}
+            style={{ padding: '6px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '12px', background: 'white' }}
+          >
+            <option value="all">全部类型</option>
+            <option value="tender">招标公告</option>
+            <option value="award">中标/成交</option>
+            <option value="change">更正/变更</option>
+            <option value="failed">流标/废标</option>
+          </select>
         </div>
         <div style={{ display: 'flex', gap: '6px' }}>
           <button
@@ -1231,6 +1261,11 @@ export default function NewsPage() {
                     {h.industry_code && (
                       <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '10px', background: '#f0f9ff', color: '#0369a1', fontWeight: 500 }}>
                         {getIndustryDisplayName(h.industry_code)}
+                      </span>
+                    )}
+                    {h.announce_type && (
+                      <span style={{ padding: '2px 8px', borderRadius: '10px', fontSize: '10px', background: ANNOUNCE_TYPE_STYLE[h.announce_type]?.bg || '#f1f5f9', color: ANNOUNCE_TYPE_STYLE[h.announce_type]?.color || '#475569', fontWeight: 500 }}>
+                        {getAnnounceTypeName(h.announce_type)}
                       </span>
                     )}
                     {h.is_converted && (
