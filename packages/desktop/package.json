@@ -40,6 +40,13 @@
         "AppImage",
         "deb"
       ]
+    },
+    "mac": {
+      "target": [
+        "zip",
+        "dmg"
+      ],
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     }
   },
   "dependencies": {
