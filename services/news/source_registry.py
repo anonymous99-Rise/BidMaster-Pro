@@ -79,9 +79,12 @@ async def sync_sources_to_db(db: AsyncSession) -> int:
 
     已有源只更新 name/weight/description/type/url 等基础信息,
     enabled 状态以数据库为准 (保留管理员的手动配置)。
+    YAML 中已移除的源会从数据库删除 (保持与代码侧一致)。
     """
     yaml_data = load_sources_yaml()
     synced = 0
+
+    yaml_codes: set[str] = set()
 
     for _group_name, sources in yaml_data.items():
         if not isinstance(sources, list):
@@ -90,6 +93,7 @@ async def sync_sources_to_db(db: AsyncSession) -> int:
             code = src.get("code")
             if not code:
                 continue
+            yaml_codes.add(code)
 
             existing_result = await db.execute(
                 select(NewsSourceRegistry).where(NewsSourceRegistry.code == code)
@@ -121,6 +125,17 @@ async def sync_sources_to_db(db: AsyncSession) -> int:
                 row.description = src.get("description", row.description)
                 if src.get("config"):
                     row.extra_config = src["config"]
+
+    # 删除 YAML 中已移除的源 (源全部来自 YAML 预置, 无自定义入口)
+    # yaml_codes 为空说明 YAML 加载失败, 此时不做删除, 防止误清空注册表
+    if yaml_codes:
+        stale_result = await db.execute(
+            select(NewsSourceRegistry).where(
+                NewsSourceRegistry.code.notin_(yaml_codes)
+            )
+        )
+        for stale_row in stale_result.scalars().all():
+            await db.delete(stale_row)
 
     await db.flush()
     return synced
