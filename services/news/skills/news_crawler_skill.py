@@ -186,9 +186,10 @@ class NewsCrawlerSkill(Skill):
         self, results: list[dict], keywords: str, exclude: str, must_contain: str
     ) -> list[dict]:
         filtered = []
-        kw_list = [k.strip() for k in keywords.split(',') if k.strip()] if keywords else []
-        ex_list = [k.strip() for k in exclude.split(',') if k.strip()] if exclude else []
-        must_list = [k.strip() for k in must_contain.split(',') if k.strip()] if must_contain else []
+        # 兼容全角逗号/顿号 (中文输入法用户自然输入, 如 "信息化，政府采购")
+        kw_list = [k.strip() for k in re.split(r'[,，、]', keywords) if k.strip()] if keywords else []
+        ex_list = [k.strip() for k in re.split(r'[,，、]', exclude) if k.strip()] if exclude else []
+        must_list = [k.strip() for k in re.split(r'[,，、]', must_contain) if k.strip()] if must_contain else []
 
         for item in results:
             text = f"{item.get('title', '')} {item.get('content', '')}".lower()
