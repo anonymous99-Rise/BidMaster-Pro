@@ -6,13 +6,14 @@
 #   - push v* tag                     → tag: latest + 语义版本 (v2.0.6 → 2.0.6)
 #   - Actions 页面手动触发 (workflow_dispatch)
 #
-# 其他服务器部署:
-#   1. 创建 PAT (勾选 read:packages): GitHub → Settings → Developer settings
-#   2. docker login ghcr.io -u <GitHub用户名> -p <PAT>
-#   3. docker/.env 里设 API_IMAGE=ghcr.io/<owner>/bidmaster-pro:<tag>
-#   4. docker compose up -d api celery-worker celery-beat
+# 其他服务器部署 (public 包免登录):
+#   1. docker/.env 里设 API_IMAGE=ghcr.io/<owner小写>/bidmaster-pro:<tag>
+#   2. docker compose up -d api celery-worker celery-beat
 #
-# 注意: 镜像包含完整后端源码, Packages 默认 private, 严禁改为 public
+# 可见性: 镜像含完整后端源码, 用户已拍板 public (2026-10-09)。
+# GITHUB_TOKEN 首推的包默认 private, 需一次性转 public:
+#   - 包页面 → Package settings → Danger Zone → Change visibility → public; 或
+#   - GitHub → Settings → Packages → Package creation → 默认可见性设 public (一劳永逸)
 # ============================================================================
 name: docker-image
 
