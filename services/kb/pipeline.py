@@ -189,18 +189,22 @@ class KbPipeline:
         processed = 0
 
         for kb_file in files:
+            # 回滚后 ORM 对象会被 expire, 先取出只读属性避免异步惰性加载
+            filename = kb_file.filename
             try:
                 if kb_file.parse_status == "parsed":
                     # 已解析过的文件跳过, 保证任务重跑幂等 (不重复建卡)
                     processed += 1
                     self.task.processed_files = processed
                     continue
-                created_entities += await self._process_file(kb_file)
+                # 单文件用 SAVEPOINT 隔离: 任一 flush 失败只回滚本文件,
+                # 否则整个 Session 变 pending-rollback, 后续文件与任务状态更新全部失效
+                async with self.db.begin_nested():
+                    created_entities += await self._process_file(kb_file)
                 processed += 1
                 self.task.processed_files = processed
-                await self.db.flush()
             except Exception as e:
-                logger.exception(f"处理文件失败 {kb_file.filename}: {e}")
+                logger.exception(f"处理文件失败 {filename}: {e}")
                 kb_file.parse_status = "failed"
                 kb_file.error = str(e)[:500]
                 await self.db.flush()
@@ -273,7 +277,7 @@ class KbPipeline:
         # 规则抽取返回 {子库: 字段dict}, LLM 已解包; 统一取内层扁平字段
         if isinstance(payload, dict) and isinstance(payload.get(category), dict):
             payload = payload[category]
-        created = await self._create_card(kb_file, category, payload, confidence, text)
+        created = await self._create_card(kb_file, category, payload, confidence)
         kb_file.parse_status = "parsed"
         await self.db.flush()
         return created
