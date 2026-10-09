@@ -609,6 +609,11 @@ class BrowserFetcher(BaseFetcher):
             raise FetchError(
                 "browser 类型需要 crawl4ai: pip install crawl4ai && playwright install chromium")
 
+        # chromium 二进制装在共享路径 (部署时 playwright install 到 /opt/ms-playwright,
+        # 容器内应用用户 999 与安装用户 root 的 HOME 不同, 必须显式指定)
+        import os
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/ms-playwright")
+
         try:
             # 每源新建 chromium 实例 (启动约 1-2s), 简单可靠
             async with AsyncWebCrawler(verbose=False, headless=True) as crawler:
