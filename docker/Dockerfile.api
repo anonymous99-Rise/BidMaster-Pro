@@ -101,6 +101,15 @@ RUN rm -rf /usr/local/lib/python3.12/site-packages/services \
            /usr/local/lib/python3.12/site-packages/core \
            /usr/local/lib/python3.12/site-packages/bidmaster_pro*
 
+# crawl4ai 无头浏览器 (browser 类型数据源, cebpubservice 等加密壳反爬站):
+#   chromium 二进制装 /opt/ms-playwright 共享路径 (services/news/fetchers.py 的
+#   BrowserFetcher 显式设置 PLAYWRIGHT_BROWSERS_PATH), install-deps 补 NSS 等共享库;
+#   下载走 npmmirror 国内镜像
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+RUN python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/ms-playwright
+
 # 拷贝应用源码（.dockerignore 会过滤掉 venv/node_modules/数据目录等）
 COPY --chown=app:app . .
 
