@@ -27,7 +27,7 @@ from core.exceptions import (
     ProjectNotFoundError,
 )
 from services.database import init_db, close_db, is_db_ready
-from services.routers import projects, interpret, generate, check, format_doc, skills, llm_config, news, knowledge, rbac, ai_image, auth, agent_runtime, mineru_config, api_key
+from services.routers import projects, interpret, generate, check, format_doc, skills, llm_config, news, knowledge, rbac, ai_image, auth, agent_runtime, mineru_config, api_key, kb
 
 
 @asynccontextmanager
@@ -87,6 +87,15 @@ async def lifespan(app: FastAPI):
                 logging.getLogger("news").info(f"已同步 {synced} 个新数据源到注册表")
     except Exception as _e:
         logging.getLogger("news").warning(f"同步数据源失败 (可忽略): {_e}")
+
+    # 证书类型字典种子 (幂等, 内置 IT 集成建议稿)
+    try:
+        from services.kb.cert_types import seed_cert_types
+        async with async_session()() as _kdb:
+            added = await seed_cert_types(_kdb)
+            await _kdb.commit()
+    except Exception as _e:
+        logging.getLogger("kb").warning(f"证书类型字典种子写入失败 (可忽略): {_e}")
 
     # Periodic TaskManager cleanup
     async def _periodic_cleanup():
@@ -199,6 +208,7 @@ app.include_router(ai_image.router, prefix="/api/ai-image", tags=["AI配图"])
 app.include_router(agent_runtime.router, prefix="/api/agent", tags=["多Agent编排"])
 app.include_router(mineru_config.router, prefix="/api/mineru", tags=["MinerU OCR"])
 app.include_router(api_key.router, prefix="/api/api-keys", tags=["API Key 管理"])
+app.include_router(kb.router, prefix="/api/kb", tags=["知识库"])
 
 
 @app.get("/api/health")

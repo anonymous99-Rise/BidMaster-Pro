@@ -29,6 +29,10 @@ celery_app.conf.update(
             "task": "services.celery_app.run_news_monitor",
             "schedule": 3600,
         },
+        "kb-expiry-scan": {
+            "task": "services.celery_app.run_kb_expiry_scan",
+            "schedule": 86400,  # 每日
+        },
     },
 )
 
@@ -131,5 +135,87 @@ def run_batch_format(self, file_paths: list[str], template: str = "default"):
             result = await skill.safe_execute(ctx)
             results.append({"file": fp, "success": result.success, "output": result.data.get("output_path") if result.success else result.error})
         return results
+
+    return _run_task(_run)
+
+
+@celery_app.task(name="services.celery_app.run_kb_pipeline", bind=True)
+def run_kb_pipeline(self, task_id: str):
+    """W1 知识库构建流水线: 对指定构建任务的文件做 提取→分类→结构化→入池。"""
+    async def _run():
+        from sqlalchemy import select
+        from services.database import async_session
+        from services.models import KbBuildTask
+        from services.kb.pipeline import KbPipeline
+        from services.llm_factory import get_llm_gateway
+
+        async with async_session()() as db:
+            task_row = (await db.execute(
+                select(KbBuildTask).where(KbBuildTask.id == task_id)
+            )).scalar_one_or_none()
+            if not task_row:
+                return {"error": "构建任务不存在"}
+            if task_row.status == "running":
+                return {"error": "任务仍在运行中", "task_id": task_id}
+            # 重跑: 重置为 pending, 让 pipeline 跳过已解析文件而非重复建卡
+            if task_row.status == "done":
+                task_row.status = "pending"
+
+            gateway = get_llm_gateway()
+            file_ids = task_row.params.get("file_ids", []) or []
+            pipeline = KbPipeline(
+                db=db, company_id=task_row.company_id,
+                task=task_row, llm=gateway,
+            )
+            try:
+                result = await pipeline.run(file_ids)
+            except Exception as e:
+                # 任务级异常: 置 failed, 避免 status 卡死 running 导致无法 retry
+                task_row.status = "failed"
+                task_row.error = f"流水线异常: {e}"[:500]
+                await db.commit()
+                return {"error": task_row.error, "task_id": task_id}
+            await db.commit()
+            return result
+
+    return _run_task(_run)
+
+
+@celery_app.task(name="services.celery_app.run_kb_expiry_scan", bind=True)
+def run_kb_expiry_scan(self):
+    """每日重算证书/人员证书 status (valid/expiring/expired)。
+
+    到期清单由前端按 status 查询, 此处只做状态重算。
+    """
+    async def _run():
+        from datetime import datetime, date
+        from sqlalchemy import select
+        from services.database import async_session
+        from services.models import KbCertificate, KbPersonnelCertificate
+
+        today = date.today()
+        updated = 0
+        expiring = 0
+        async with async_session()() as db:
+            for model in (KbCertificate, KbPersonnelCertificate):
+                rows = (await db.execute(select(model))).scalars().all()
+                for row in rows:
+                    expiry = getattr(row, "expiry_date", "") or ""
+                    new_status = "valid"
+                    if expiry:
+                        try:
+                            d = datetime.strptime(str(expiry)[:10], "%Y-%m-%d").date()
+                        except ValueError:
+                            d = None
+                        if d:
+                            td = (d - today).days
+                            new_status = "expired" if td < 0 else ("expiring" if td <= 90 else "valid")
+                    if row.status != new_status:
+                        row.status = new_status
+                        updated += 1
+                    if new_status in ("expiring", "expired"):
+                        expiring += 1
+            await db.commit()
+        return {"updated": updated, "expiring_or_expired": expiring}
 
     return _run_task(_run)

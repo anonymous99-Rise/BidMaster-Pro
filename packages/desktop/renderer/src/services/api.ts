@@ -720,6 +720,141 @@ export interface HotspotDetail extends HotspotScoreDetail {
   created_at: string;
 }
 
+// === 知识库 (KB) — 公司空间 / 子库 / 上传构建 / 人审队列 / 证书字典 / 到期提醒 ===
+export type KbCategory = 'certificate' | 'personnel' | 'achievement' | 'financial' | 'credit';
+
+export interface KbCompany {
+  id: string;
+  name: string;
+  short_name: string;
+  unified_social_code: string;
+  legal_person: string;
+  industry_code: string;
+  region: string;
+  contact: string;
+  description: string;
+  is_default: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface KbCard {
+  id: string;
+  is_audited: boolean;
+  confidence: number;
+  source: string;
+  [key: string]: unknown;
+}
+
+export interface KbReviewItem {
+  entity_type: KbCategory;
+  id: string;
+  company_id: string;
+  fields: Record<string, unknown>;
+}
+
+export interface KbCertType {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  default_valid_months: number;
+  scope_hint: string;
+  is_builtin: boolean;
+}
+
+export interface KbExpiryAlert {
+  entity_type: string;
+  id: string;
+  company_id: string;
+  name: string;
+  expiry_date: string;
+  status: string;
+  days_left: number;
+}
+
+export interface KbBuildTaskInfo {
+  id: string;
+  company_id: string;
+  status: string;
+  total_files: number;
+  processed_files: number;
+  created_entities: number;
+  created_edges: number;
+  error: string;
+  created_at: string | null;
+}
+
+export interface KbFileInfo {
+  id: string;
+  filename: string;
+  rel_dir: string;
+  ext: string;
+  file_size: number;
+  parse_status: string;
+  parse_method: string;
+  category: string;
+  page_count: number;
+  error: string;
+  created_at: string | null;
+}
+
+export const kbApi = {
+  listCompanies: () => api.get<{ companies: KbCompany[] }>('/kb/companies'),
+  createCompany: (data: Partial<KbCompany>) => api.post<KbCompany>('/kb/companies', data),
+  getCompany: (id: string) => api.get<KbCompany>(`/kb/companies/${id}`),
+  updateCompany: (id: string, data: Partial<KbCompany>) => api.patch<KbCompany>(`/kb/companies/${id}`, data),
+  deleteCompany: (id: string) => api.delete(`/kb/companies/${id}`),
+
+  listCards: (companyId: string, params?: {
+    category?: KbCategory; audit?: 'all' | 'unaudited' | 'audited';
+    status?: string; q?: string; limit?: number; offset?: number;
+  }) => api.get<{ category: string; total: number; cards: KbCard[] }>(
+    `/kb/companies/${companyId}/cards`, { params }),
+
+  uploadFile: (companyId: string, file: File, autoBuild = true) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('auto_build', String(autoBuild));
+    return api.post<{ success: boolean; file_id: string; task_id: string | null }>(
+      `/kb/companies/${companyId}/upload`, formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 300000 });
+  },
+  uploadFolder: (companyId: string, zip: File, autoBuild = true) => {
+    const formData = new FormData();
+    formData.append('file', zip);
+    formData.append('auto_build', String(autoBuild));
+    return api.post<{ success: boolean; file_count: number; file_ids: string[]; task_id: string | null }>(
+      `/kb/companies/${companyId}/upload-folder`, formData,
+      { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 });
+  },
+
+  listBuildTasks: (companyId?: string) =>
+    api.get<{ tasks: KbBuildTaskInfo[] }>('/kb/build-tasks', { params: companyId ? { company_id: companyId } : {} }),
+  retryBuildTask: (taskId: string) => api.post(`/kb/build-tasks/${taskId}/retry`),
+
+  reviewQueue: (companyId?: string) =>
+    api.get<{ items: KbReviewItem[]; count: number }>('/kb/review-queue', { params: companyId ? { company_id: companyId } : {} }),
+  approveCard: (entityType: KbCategory, cardId: string) =>
+    api.post(`/kb/review-queue/${entityType}/${cardId}/approve`),
+  rejectCard: (entityType: KbCategory, cardId: string) =>
+    api.post(`/kb/review-queue/${entityType}/${cardId}/reject`),
+
+  listCertTypes: (category?: string) =>
+    api.get<{ cert_types: KbCertType[] }>('/kb/cert-types', { params: category ? { category } : {} }),
+  createCertType: (data: { code: string; name: string; category?: string; default_valid_months?: number; scope_hint?: string }) =>
+    api.post('/kb/cert-types', data),
+  deleteCertType: (id: string) => api.delete(`/kb/cert-types/${id}`),
+
+  expiryAlerts: (companyId?: string, days = 90) =>
+    api.get<{ alerts: KbExpiryAlert[]; count: number }>('/kb/expiry-alerts',
+      { params: { days, ...(companyId ? { company_id: companyId } : {}) } }),
+
+  listFiles: (companyId: string, parseStatus?: string) =>
+    api.get<{ files: KbFileInfo[] }>(`/kb/companies/${companyId}/files`,
+      { params: parseStatus ? { parse_status: parseStatus } : {} }),
+};
+
 export const knowledgeApi = {
   list: () => api.get('/knowledge/'),
   create: (data: { name: string; embedding_model?: string }) => api.post('/knowledge/', data),

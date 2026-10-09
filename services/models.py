@@ -457,3 +457,264 @@ class ApiKeyUsage(Base):
     client_ip = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ==========================================================================
+# 商务知识库模块 (KB) —— 公司主线 / 多租户 / Obsidian 式子库 + 知识图谱
+# 说明: 表名统一 kb_ 前缀, 与既有 knowledge_bases(RAG 文档库) 区分。
+#       company_id 贯穿所有数据表, 公司 = 租户 = 空间。
+#       实体卡片 = 结构化一行; 来源文件 = 证据; 关系 = kb_edges。
+#       一切由 agent 流水线(W1)产出, is_audited=true 后才进自动勾对池。
+# ==========================================================================
+
+
+class KbCompany(Base):
+    """公司空间 (多租户底座)。一家企业一个空间, 承载全部子库与图谱。"""
+    __tablename__ = "kb_companies"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    name = Column(String(300), nullable=False, unique=True)  # 公司全称
+    short_name = Column(String(200), default="")
+    unified_social_code = Column(String(64), default="")     # 统一社会信用代码
+    legal_person = Column(String(100), default="")           # 法定代表人
+    industry_code = Column(String(20), default="12", index=True)  # 与行业树一致
+    region = Column(String(100), default="")                 # 注册地
+    contact = Column(String(200), default="")
+    description = Column(Text, default="")
+    is_default = Column(Boolean, default=False, index=True)  # 单企业部署的默认空间
+    extra = Column(JSON, default=dict)
+    created_by = Column(String(36), default="")              # 创建者 user_id (弱关联)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbCertType(Base):
+    """证书类型字典 (可配置, 内置 IT 集成建议稿, 用户可增删)。"""
+    __tablename__ = "kb_cert_types"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    code = Column(String(80), nullable=False, unique=True)   # 稳定标识, 如 iso9001
+    name = Column(String(200), nullable=False)               # 显示名, 如 ISO9001 质量管理体系认证
+    category = Column(String(20), default="enterprise", index=True)  # enterprise/personnel/financial
+    default_valid_months = Column(Integer, default=0)        # 典型有效期(月), 0=长期/未知
+    scope_hint = Column(String(300), default="")             # 覆盖范围提示, 勾对参考
+    is_builtin = Column(Boolean, default=False, index=True)  # 内置不可删(仅可禁用)
+    enabled = Column(Boolean, default=True, index=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbFile(Base):
+    """来源文件 (证据层)。上传的证照扫描件/合同/财报等, 缓存解析文本。"""
+    __tablename__ = "kb_files"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    filename = Column(String(500), nullable=False)           # 原始文件名
+    rel_dir = Column(String(500), default="")                # 上传时的相对目录(整包上传保留结构)
+    stored_path = Column(String(1000), nullable=False)       # 落盘路径
+    file_size = Column(Integer, default=0)
+    ext = Column(String(20), default="")
+    sha256 = Column(String(64), default="", index=True)      # 去重指纹
+    extracted_text = Column(LONGTEXT, nullable=True)         # 解析出的全文(重解析不重复 OCR)
+    parse_status = Column(String(20), default="pending", index=True)  # pending/parsing/parsed/failed
+    parse_method = Column(String(20), default="")            # text/llm/vision/placeholder
+    page_count = Column(Integer, default=0)
+    category = Column(String(30), default="", index=True)    # agent 分类到的子库
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "sha256", name="uq_kb_file_company_sha"),
+    )
+
+
+class KbCertificate(Base):
+    """企业资质证书卡片 (一证一记录, 关联来源文件)。"""
+    __tablename__ = "kb_certificates"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    file_id = Column(String(36), default="", index=True)     # 来源文件 kb_files.id
+    name = Column(String(300), nullable=False)               # 证书名称
+    number = Column(String(200), default="")                 # 证书编号
+    category = Column(String(20), default="enterprise", index=True)  # enterprise/personnel/financial
+    cert_type_code = Column(String(80), default="", index=True)  # 关联 kb_cert_types.code
+    level = Column(String(100), default="")                  # 等级
+    scope = Column(String(500), default="")                  # 覆盖范围(勾对关键)
+    holder = Column(String(300), default="")                 # 持证主体
+    issue_date = Column(String(20), default="")              # YYYY-MM-DD
+    expiry_date = Column(String(20), default="", index=True)  # YYYY-MM-DD, 空=长期
+    issuing_authority = Column(String(300), default="")
+    status = Column(String(20), default="valid", index=True)  # valid/expiring/expired/needs_completion
+    raw_text = Column(LONGTEXT, nullable=True)
+    is_audited = Column(Boolean, default=False, index=True)  # 人审通过才进自动勾对池
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")            # manual/ocr/public_agent
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbPersonnel(Base):
+    """从业人员卡片。"""
+    __tablename__ = "kb_personnel"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    file_id = Column(String(36), default="", index=True)
+    name = Column(String(100), nullable=False)
+    id_number_enc = Column(String(200), default="")          # 身份证号(加密/脱敏存储)
+    gender = Column(String(10), default="")
+    title = Column(String(100), default="")                  # 职称
+    role = Column(String(100), default="")                   # 拟派岗位(项目经理/技术负责人...)
+    dept = Column(String(200), default="")
+    phone = Column(String(50), default="")
+    social_insurance_proof_file_id = Column(String(36), default="")  # 社保证明文件
+    is_audited = Column(Boolean, default=False, index=True)
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbPersonnelCertificate(Base):
+    """人员证书卡片 (注册类/职称类/软考/特种作业...)。"""
+    __tablename__ = "kb_personnel_certificates"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    personnel_id = Column(String(36), ForeignKey("kb_personnel.id"), nullable=False, index=True)
+    cert_type = Column(String(200), default="")              # 证书类型名
+    cert_type_code = Column(String(80), default="", index=True)
+    major = Column(String(200), default="")                  # 专业
+    level = Column(String(100), default="")                  # 级别(高级/中级/初级)
+    cert_no = Column(String(200), default="")
+    issue_date = Column(String(20), default="")
+    expiry_date = Column(String(20), default="", index=True)
+    issuing_authority = Column(String(300), default="")
+    status = Column(String(20), default="valid", index=True)
+    file_id = Column(String(36), default="", index=True)
+    is_audited = Column(Boolean, default=False, index=True)
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbAchievement(Base):
+    """业绩卡片 (项目/金额/业主/证明文件)。公开采集与手工录入共用。"""
+    __tablename__ = "kb_achievements"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    project_name = Column(String(500), nullable=False)
+    client_name = Column(String(300), default="")            # 业主单位
+    contract_no = Column(String(200), default="")
+    contract_amount = Column(Float, default=0.0)             # 统一万元
+    sign_date = Column(String(20), default="", index=True)   # YYYY-MM-DD
+    completion_date = Column(String(20), default="")
+    year = Column(Integer, default=0, index=True)            # 签约年份(近三年业绩算分)
+    project_scope = Column(String(1000), default="")         # 项目内容摘要
+    project_type = Column(String(200), default="")           # 项目类型
+    industry_code = Column(String(20), default="", index=True)
+    region = Column(String(100), default="")
+    bid_result = Column(String(20), default="win")           # win/loss (未中标同样采集复盘)
+    file_ids = Column(JSON, default=list)                    # 合同/验收/发票 证明文件
+    is_audited = Column(Boolean, default=False, index=True)
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")            # manual/public_agent
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbFinancial(Base):
+    """财务卡片 (审计报告/财报/纳税/资信)。数值规则勾对的数据源。"""
+    __tablename__ = "kb_financials"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    report_type = Column(String(40), default="audit_report", index=True)  # audit_report/financial_statement/tax/credit_rating
+    period_start = Column(String(20), default="")
+    period_end = Column(String(20), default="")
+    year = Column(Integer, default=0, index=True)
+    total_assets = Column(Float, default=0.0)                # 总资产(万元)
+    revenue = Column(Float, default=0.0)                     # 营收(万元)
+    net_profit = Column(Float, default=0.0)                  # 净利润(万元)
+    debt_ratio = Column(Float, default=0.0)                  # 资产负债率(%)
+    audit_agency = Column(String(300), default="")
+    file_id = Column(String(36), default="", index=True)
+    is_audited = Column(Boolean, default=False, index=True)
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbCredit(Base):
+    """信用卡片 (AAA 证书/获奖/无违法记录/信用中国快照)。"""
+    __tablename__ = "kb_credits"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    credit_type = Column(String(40), default="aaa_certificate", index=True)  # aaa_certificate/award/no_violation/credit_check_snapshot
+    title = Column(String(300), default="")
+    holder = Column(String(300), default="")
+    check_date = Column(String(20), default="")              # YYYY-MM-DD
+    check_url = Column(String(1000), default="")
+    result = Column(String(200), default="")                 # 结果/结论
+    score = Column(Float, default=0.0)
+    file_id = Column(String(36), default="", index=True)
+    is_audited = Column(Boolean, default=False, index=True)
+    audit_note = Column(Text, default="")
+    source = Column(String(20), default="manual")
+    confidence = Column(Float, default=0.0)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KbEdge(Base):
+    """知识图谱关系边。实体间的关系(持有/参与/响应/满足/中标/归属)。"""
+    __tablename__ = "kb_edges"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    src_type = Column(String(30), nullable=False, index=True)  # certificate/personnel/achievement...
+    src_id = Column(String(36), nullable=False, index=True)
+    edge_type = Column(String(30), nullable=False)             # holds/participates/responds/satisfies/wins/belongs
+    dst_type = Column(String(30), nullable=False, index=True)
+    dst_id = Column(String(36), nullable=False, index=True)
+    confidence = Column(Float, default=0.0)                    # agent 猜的置信度, 人审后=1.0
+    source = Column(String(20), default="agent_inferred")      # agent_inferred/manual/public_agent
+    is_audited = Column(Boolean, default=False, index=True)
+    extra = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbBuildTask(Base):
+    """知识库构建任务 (W1 流水线一次运行的记录)。"""
+    __tablename__ = "kb_build_tasks"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)  # pending/running/done/failed
+    total_files = Column(Integer, default=0)
+    processed_files = Column(Integer, default=0)
+    created_entities = Column(Integer, default=0)
+    created_edges = Column(Integer, default=0)
+    error = Column(Text, default="")
+    params = Column(JSON, default=dict)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

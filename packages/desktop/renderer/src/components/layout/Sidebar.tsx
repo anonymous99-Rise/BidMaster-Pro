@@ -7,6 +7,7 @@ import {
   ShieldCheck,
   FileText,
   Newspaper,
+  Building2,
   Settings,
   ChevronRight,
   AlertCircle,
@@ -23,6 +24,7 @@ const pipelineSteps = [
 
 const otherNavItems = [
   { path: '/news', icon: Newspaper, label: '资讯中心', desc: '今日热点/商机', color: '#3b82f6' },
+  { path: '/knowledge', icon: Building2, label: '知识库', desc: '公司空间/资质库', color: '#059669' },
   { path: '/settings', icon: Settings, label: '平台设置', desc: '模型/权限/技能', color: '#475569' },
 ];
 
@@ -83,7 +85,7 @@ export default function Sidebar() {
   const visibleOtherNav = otherNavItems.filter(item => {
     if (isSystemAdmin) return true;
     if (item.path === '/settings') return userRoleNames.some(n => n === 'admin' || n === 'project_manager' || n === 'writer');
-    if (item.path === '/news') return hasAnyRole;
+    if (item.path === '/knowledge') return userRoleNames.some(n => n === 'admin' || n === 'project_manager' || n === 'writer' || n === 'qualifier');
     return hasAnyRole;
   });
 

@@ -6,6 +6,7 @@ import GeneratePage from './pages/GeneratePage';
 import CheckPage from './pages/CheckPage';
 import FormatPage from './pages/FormatPage';
 import NewsPage from './pages/NewsPage';
+import KnowledgePage from './pages/KnowledgePage';
 import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 import { useAppStore } from './stores/appStore';
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/check" element={<CheckPage />} />
         <Route path="/format" element={<FormatPage />} />
         <Route path="/news" element={<NewsPage />} />
+        <Route path="/knowledge" element={<KnowledgePage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>
