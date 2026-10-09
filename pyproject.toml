@@ -43,6 +43,12 @@ dependencies = [
     "weasyprint>=61",
     "fastmcp>=2.0",
     "apprise>=1.8",
+]
+
+[project.optional-dependencies]
+# 本地向量化 (embedding_mode="local" 才需要): torch+CUDA 全家桶约 4-5GB,
+# 生产默认走 dashscope API 模式, 镜像不装; 需要: pip install -e ".[local-embedding]"
+local-embedding = [
     "sentence-transformers>=3.0",
 ]
 
