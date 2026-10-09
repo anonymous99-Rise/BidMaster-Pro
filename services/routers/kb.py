@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.database import get_db
@@ -392,14 +392,16 @@ async def _trigger_build(db, company_id: str, file_ids: list[str]) -> str:
     db.add(task)
     await db.flush()
     task_id = str(task.id)
+    # 必须先提交再投递: worker 抢跑会在任务行可见前查库, 命中"构建任务不存在"
+    await db.commit()
     try:
         from services.celery_app import run_kb_pipeline
         run_kb_pipeline.delay(task_id)
-        task.status = "queued"
+        await db.execute(update(KbBuildTask).where(KbBuildTask.id == task_id).values(status="queued"))
     except Exception as e:
         logger.warning(f"KB 构建任务投递失败 (可稍后重试): {e}")
-        task.status = "pending"
-    await db.flush()
+        await db.execute(update(KbBuildTask).where(KbBuildTask.id == task_id).values(status="pending"))
+    await db.commit()
     return task_id
 
 
@@ -437,13 +439,15 @@ async def retry_build_task(task_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="任务正在运行中")
     if not (task.params.get("file_ids") or []):
         raise HTTPException(status_code=400, detail="任务没有关联文件")
+    # 先提交 queued 状态再投递, 避免 worker 抢跑查不到任务行
+    await db.execute(update(KbBuildTask).where(KbBuildTask.id == task_id).values(status="queued", error=""))
+    await db.commit()
     try:
         from services.celery_app import run_kb_pipeline
         run_kb_pipeline.delay(task_id)
-        task.status = "queued"
-        task.error = ""
-        await db.flush()
     except Exception as e:
+        await db.execute(update(KbBuildTask).where(KbBuildTask.id == task_id).values(status="pending"))
+        await db.commit()
         raise HTTPException(status_code=500, detail=f"投递失败: {e}")
     return {"success": True, "task_id": task_id}
 
