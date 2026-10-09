@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import html
 import logging
 import re
 from datetime import datetime
@@ -54,6 +55,7 @@ _EMOJI_REPLACE_MAP = {
 def sanitize_for_mysql(text: str | None) -> str:
     """清理文本,使其可安全写入 MySQL utf8 (3字节) 列
 
+    - 解码 HTML 实体 (Epoint/HTML 抓取的 content 常残留 &nbsp; 等)
     - 用友好降级映射替换常见 emoji
     - 其他 4 字节字符直接去除
     - 清理控制字符
@@ -62,6 +64,9 @@ def sanitize_for_mysql(text: str | None) -> str:
         return ""
 
     s = str(text)
+
+    # 0) HTML 实体解码; &nbsp; 解码为不间断空格 \xa0, 归一为普通空格
+    s = html.unescape(s).replace("\xa0", " ")
 
     # 1) 已知 emoji 降级
     for emoji, replacement in _EMOJI_REPLACE_MAP.items():
