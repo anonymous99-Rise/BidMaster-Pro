@@ -263,6 +263,9 @@ export default function NewsPage() {
         const results = data.data?.results || data.data?.filtered || [];
         setNewsResults(results);
         setActiveTab('results');
+        if (results.length === 0) {
+          showToast('success', `抓取完成,无匹配结果 (原始公告 ${data.data?.total_crawled ?? 0} 条被关键词过滤)`);
+        }
         // 展示抓取错误 (如有)
         const errs = data.crawl_errors || [];
         if (errs.length > 0) {
@@ -313,9 +316,10 @@ export default function NewsPage() {
     try {
       const res = await newsApi.listResults(taskId);
       const results = res.data.results || [];
-      if (results.length > 0) {
-        setNewsResults(results);
-        setActiveTab('results');
+      setNewsResults(results);
+      setActiveTab('results');
+      if (results.length === 0) {
+        showToast('success', '该任务暂无采集结果,点击"立即刷新"抓取最新公告');
       }
     } catch (e) {
       console.error('查看结果失败', e);
