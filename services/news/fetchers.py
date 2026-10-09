@@ -451,6 +451,8 @@ class HTMLFetcher(BaseFetcher):
         return HTMLFetcher._CONTENT_PATTERNS
 
     def _extract_content(self, html: str) -> str:
+        # 反爬壳页(如千里马)正文常是 JS 脚本, 先剔除 script/style/noscript 再匹配/兜底
+        html = self.RE_SCRIPT.sub(' ', html)
         for pattern in self._content_patterns():
             matches = pattern.findall(html)
             if matches:
@@ -461,6 +463,10 @@ class HTMLFetcher(BaseFetcher):
                     return text[:8000]
         text = self.RE_TAG.sub('', html)
         return self.RE_WS.sub(' ', text).strip()[:5000]
+
+    RE_SCRIPT = re.compile(
+        r'<(script|style|noscript)\b[^>]*>.*?</\1\s*>', re.DOTALL | re.IGNORECASE
+    )
 
 
 class EpointFetcher(BaseFetcher):
