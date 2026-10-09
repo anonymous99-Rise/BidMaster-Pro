@@ -1,6 +1,6 @@
 {
   "name": "bidmaster-pro-desktop",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "智能招投标平台 - 全流程智能招投标平台",
   "main": "main/index.js",
   "repository": {
