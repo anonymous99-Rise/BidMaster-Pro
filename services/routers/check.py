@@ -18,12 +18,13 @@ from services.models import (
     ProjectStatus, CheckType,
 )
 from services.llm_factory import get_llm_gateway
+from services.middleware.rbac_middleware import get_current_user
 from core.skill_engine.base import SkillContext
 from core.task_manager import TaskManager
 from core.settings import get_settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
 

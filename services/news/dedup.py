@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 
 
@@ -71,7 +71,7 @@ class NewsDeduplicator:
     @classmethod
     def filter_by_time(cls, items: List[dict], max_age_hours: int = 168) -> List[dict]:
         """时间窗过滤 (默认 7 天)"""
-        cutoff = datetime.now() - timedelta(hours=max_age_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
         filtered: List[dict] = []
         for item in items:
             pub_date_str = item.get("pub_date", "")
@@ -81,6 +81,9 @@ class NewsDeduplicator:
                 else:
                     filtered.append(item)
                     continue
+                # 无时区的按 UTC 处理, 避免 aware/naive 比较抛 TypeError
+                if pub_date.tzinfo is None:
+                    pub_date = pub_date.replace(tzinfo=timezone.utc)
                 if pub_date >= cutoff:
                     filtered.append(item)
             except Exception:

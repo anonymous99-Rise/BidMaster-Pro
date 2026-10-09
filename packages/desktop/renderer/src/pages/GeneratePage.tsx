@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PenTool, Loader2, ListTree, FileText, AlertTriangle, Shield, Play, Download, ChevronRight, ChevronDown, GripVertical, Plus, Trash2, Edit3, Check, X, ImageIcon, Copy, CheckCircle2, Info, Eye, BookOpen, Edit, ArrowRight } from 'lucide-react';
-import { generateApi, projectApi, interpretApi, aiImageApi, type Project, type OutlineNode, type GateInfo, type SSEController } from '../services/api';
+import { generateApi, projectApi, interpretApi, aiImageApi, downloadBlob, type Project, type OutlineNode, type GateInfo, type SSEController } from '../services/api';
 import { useAppStore } from '../stores/appStore';
 import StepHeader from '../components/common/StepHeader';
 import MarkdownRenderer from '../components/common/MarkdownRenderer';
@@ -1913,7 +1913,15 @@ export default function GeneratePage() {
                   <button onClick={() => { setEditingContent(selectedChapterContent); setContentViewMode('edit'); }} style={{ padding: '4px 10px', fontSize: '12px', border: '1px solid var(--color-border)', borderLeft: 'none', borderRadius: '0 4px 4px 0', cursor: 'pointer', background: contentViewMode === 'edit' ? '#d97706' : 'white', color: contentViewMode === 'edit' ? 'white' : 'var(--color-text)' }}>
                     <Edit3 size={12} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} />编辑
                   </button>
-                  <button onClick={() => { if (!selectedProjectId) return; window.open(`/api/projects/${selectedProjectId}/export/word`, '_blank'); }} style={{ padding: '4px 10px', fontSize: '12px', border: '1px solid #059669', borderRadius: '4px', cursor: 'pointer', background: '#ecfdf5', color: '#059669', marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <button onClick={async () => {
+                    if (!selectedProjectId) return;
+                    try {
+                      const projName = projects.find(p => p.id === selectedProjectId)?.name || '投标文档';
+                      await downloadBlob(`/api/projects/${selectedProjectId}/export/word`, `${projName}.docx`);
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : '下载失败');
+                    }
+                  }} style={{ padding: '4px 10px', fontSize: '12px', border: '1px solid #059669', borderRadius: '4px', cursor: 'pointer', background: '#ecfdf5', color: '#059669', marginLeft: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <Download size={12} /> 下载Word文档
                   </button>
                 </div>

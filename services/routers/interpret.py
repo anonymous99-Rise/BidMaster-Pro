@@ -10,8 +10,9 @@ from sqlalchemy import select
 from services.database import get_db
 from services.models import Project, Document, Analysis, ProjectStatus
 from services.llm_factory import get_llm_gateway
+from services.middleware.rbac_middleware import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 MAX_FILE_SIZE = 100 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".wps", ".md"}
@@ -41,7 +42,8 @@ async def upload_tender_file(
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail=f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)")
 
-        file_path = upload_dir / file.filename
+        # 只取基础文件名, 防止 filename="../../app/.env" 之类的路径穿越
+        file_path = upload_dir / Path(file.filename).name
         with open(file_path, "wb") as f:
             f.write(content)
 

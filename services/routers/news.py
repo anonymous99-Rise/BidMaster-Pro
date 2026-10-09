@@ -17,7 +17,8 @@ from services.middleware.api_key import require_any_auth, AuthPrincipal
 from services.news.skills.news_crawler_skill import NewsCrawlerSkill
 from services.news.source_registry import resolve_task_sites
 
-router = APIRouter()
+# router 级统一鉴权: API Key 或 Bearer Token 二选一 (原先仅部分端点挂载, 存在匿名访问缺口)
+router = APIRouter(dependencies=[Depends(require_any_auth)])
 logger = logging.getLogger(__name__)
 
 

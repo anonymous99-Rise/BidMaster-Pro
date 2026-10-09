@@ -60,6 +60,40 @@ api.interceptors.response.use(
   }
 );
 
+// 带认证的文件下载: 走 fetch blob, 避免 window.open 相对路径在 Electron(file://)下失效、且无法带 token
+export async function downloadBlob(path: string, filename: string): Promise<void> {
+  const token = localStorage.getItem('bidmaster_token');
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${getServerBase()}${path}`, { headers });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = String(body.detail);
+    } catch { /* 非 JSON 错误体 */ }
+    throw new Error(`下载失败: ${detail}`);
+  }
+  const blob = await res.blob();
+  if (blob.type.includes('application/json')) {
+    const text = await blob.text();
+    let detail = '服务端返回了错误数据';
+    try {
+      const body = JSON.parse(text);
+      if (body?.detail) detail = String(body.detail);
+    } catch { /* ignore */ }
+    throw new Error(`下载失败: ${detail}`);
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export interface SSEController {
   cancel: () => void;
 }
@@ -511,7 +545,7 @@ export const llmApi = {
 
 export const newsApi = {
   listTasks: () => api.get('/news/tasks'),
-  createTask: (data: { name: string; keywords: string; sites?: string[]; interval_minutes?: number }) =>
+  createTask: (data: { name: string; keywords: string; exclude_keywords?: string; must_contain_keywords?: string; sites?: string[]; interval_minutes?: number }) =>
     api.post('/news/tasks', data),
   updateTask: (id: string, data: { enabled?: boolean; name?: string; keywords?: string }) =>
     api.patch(`/news/tasks/${id}`, data),

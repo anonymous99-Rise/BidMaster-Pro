@@ -238,7 +238,15 @@ export default function CheckPage() {
     setExportingDocx(true);
     try {
       const res = await generateApi.exportDocx(selectedProjectId);
-      const blob = new Blob([res.data as unknown as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      // responseType blob 下 4xx/5xx 的 JSON 错误体也会包成 Blob, 直接存会产出损坏文件
+      if (!(res.data instanceof Blob)) throw new Error('服务端未返回文件');
+      if (res.data.type.includes('application/json')) {
+        const text = await res.data.text();
+        let detail = '导出失败';
+        try { detail = JSON.parse(text)?.detail || detail; } catch { /* ignore */ }
+        throw new Error(detail);
+      }
+      const blob = res.data;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -393,7 +401,14 @@ export default function CheckPage() {
     if (!selectedProjectId) return;
     try {
       const res = await checkApi.exportReport(selectedProjectId, reportId, format);
-      const blob = new Blob([res.data as unknown as BlobPart], { type: 'text/markdown' });
+      if (!(res.data instanceof Blob)) throw new Error('服务端未返回文件');
+      if (res.data.type.includes('application/json')) {
+        const text = await res.data.text();
+        let detail = '导出失败';
+        try { detail = JSON.parse(text)?.detail || detail; } catch { /* ignore */ }
+        throw new Error(detail);
+      }
+      const blob = res.data;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

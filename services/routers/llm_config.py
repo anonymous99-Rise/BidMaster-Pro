@@ -417,8 +417,12 @@ async def list_llm_configs(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/configs/{config_id}/reveal")
-async def reveal_config_key(config_id: str, db: AsyncSession = Depends(get_db)):
-    """获取单条配置的真实 API Key（需要已登录且有权限）。"""
+async def reveal_config_key(
+    config_id: str,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require_permission("settings.llm")),
+):
+    """获取单条配置的真实 API Key (需要 settings.llm 权限, 避免任意登录用户取回明文密钥)。"""
     result = await db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == config_id))
     cfg = result.scalar_one_or_none()
     if not cfg:

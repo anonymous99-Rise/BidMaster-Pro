@@ -9,8 +9,9 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const { setUser, setToken } = useAppStore();
   const [serverBase, setServerBaseState] = useState(getServerBase());
-  const [email, setEmail] = useState('admin@bidmaster.pro');
-  const [password, setPassword] = useState('admin123');
+  // 默认凭证只在开发构建预填, 生产包不预填不展示
+  const [email, setEmail] = useState(import.meta.env.DEV ? 'admin@bidmaster.pro' : '');
+  const [password, setPassword] = useState(import.meta.env.DEV ? 'admin123' : '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -202,12 +203,14 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <div style={{
-          marginTop: '24px', textAlign: 'center',
-          fontSize: '12px', color: '#94a3b8',
-        }}>
-          默认管理员: admin@bidmaster.pro / admin123
-        </div>
+        {import.meta.env.DEV && (
+          <div style={{
+            marginTop: '24px', textAlign: 'center',
+            fontSize: '12px', color: '#94a3b8',
+          }}>
+            默认管理员: admin@bidmaster.pro / admin123
+          </div>
+        )}
       </div>
 
       <div style={{

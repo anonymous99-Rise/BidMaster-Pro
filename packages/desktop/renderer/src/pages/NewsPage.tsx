@@ -217,6 +217,8 @@ export default function NewsPage() {
       await newsApi.createTask({
         name: newName.trim(),
         keywords: newKeywords.trim(),
+        exclude_keywords: newExclude.trim(),
+        must_contain_keywords: newMustContain.trim(),
         sites: newSites.split(',').map(s => s.trim()).filter(Boolean),
       });
       setNewName('');
@@ -330,11 +332,13 @@ export default function NewsPage() {
     }
   };
 
-  const loadSources = async () => {
+  const loadSources = async (industry?: string) => {
     setSourcesLoading(true);
     try {
+      // 支持显式传入筛选值, 避免闭包捕获 setState 前的旧 sourcesFilter
+      const filter = industry ?? sourcesFilter;
       const params: { industry?: string } = {};
-      if (sourcesFilter !== 'all') params.industry = sourcesFilter;
+      if (filter !== 'all') params.industry = filter;
       const res = await newsApi.listSources(params);
       setSources(res.data.sources || []);
     } catch (e) {
@@ -502,6 +506,8 @@ export default function NewsPage() {
       await newsApi.createTask({
         name: wizardName.trim(),
         keywords: wizardKeywords.trim(),
+        exclude_keywords: wizardExclude.trim(),
+        must_contain_keywords: wizardMustContain.trim(),
         sites: wizardSourceCodes,
       });
       showToast('success', '任务创建成功');
@@ -1530,7 +1536,7 @@ export default function NewsPage() {
         <div style={{ display: 'flex', gap: '6px' }}>
           <select
             value={sourcesFilter}
-            onChange={(e) => { setSourcesFilter(e.target.value); setTimeout(loadSources, 0); }}
+            onChange={(e) => { const v = e.target.value; setSourcesFilter(v); loadSources(v); }}
             style={{ padding: '6px 12px', border: '1px solid var(--color-border)', borderRadius: '6px', fontSize: '12px', background: 'white' }}
           >
             <option value="all">全部行业</option>

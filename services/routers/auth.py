@@ -22,6 +22,31 @@ from services.session_store import (
 
 router = APIRouter()
 
+# 登录限速 (进程内存级): 同一邮箱连续失败达阈值后锁定一段时间
+_LOGIN_FAILS: dict[str, tuple[int, float]] = {}
+_LOGIN_MAX_FAILS = 5
+_LOGIN_LOCK_SECONDS = 900
+
+
+def _check_login_locked(key: str) -> bool:
+    rec = _LOGIN_FAILS.get(key)
+    if not rec:
+        return False
+    count, first_ts = rec
+    if time.time() - first_ts > _LOGIN_LOCK_SECONDS:
+        _LOGIN_FAILS.pop(key, None)
+        return False
+    return count >= _LOGIN_MAX_FAILS
+
+
+def _record_login_fail(key: str) -> None:
+    now = time.time()
+    rec = _LOGIN_FAILS.get(key)
+    if rec and now - rec[1] <= _LOGIN_LOCK_SECONDS:
+        _LOGIN_FAILS[key] = (rec[0] + 1, rec[1])
+    else:
+        _LOGIN_FAILS[key] = (1, now)
+
 
 class LoginRequest(BaseModel):
     email: str
@@ -56,17 +81,30 @@ def verify_token(token: str) -> dict | None:
 
 @router.post("/login")
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+    fail_key = data.email.strip().lower()
+    if _check_login_locked(fail_key):
+        raise HTTPException(status_code=429, detail="登录失败次数过多，请 15 分钟后重试")
+
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
     if not user:
+        _record_login_fail(fail_key)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
     if not user.password_hash:
         raise HTTPException(status_code=401, detail="该账户未设置密码，请联系管理员")
 
     if not _verify_password(data.password, user.password_hash):
+        _record_login_fail(fail_key)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
+
+    _LOGIN_FAILS.pop(fail_key, None)
+
+    # 兼容历史无盐 SHA256 口令: 登录成功后升级为 bcrypt
+    if not user.password_hash.startswith("$2"):
+        user.password_hash = _hash_password(data.password)
+        await db.flush()
 
     token = secrets.token_hex(32)
     _cleanup_sessions()
@@ -146,12 +184,17 @@ async def logout(request: Request, db: AsyncSession = Depends(get_db)):
     return {"success": True}
 
 
+class ChangePasswordRequest(BaseModel):
+    new_password: str
+
+
 @router.put("/change-password")
 async def change_password(
     request: Request,
-    new_password: str,
+    body: ChangePasswordRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    # 密码走 body 传输, 避免 query 参数明文落入访问日志
     from services.middleware.rbac_middleware import get_current_user
     user = await get_current_user(request, db)
 
@@ -163,10 +206,10 @@ async def change_password(
     if not session:
         raise HTTPException(status_code=401, detail="未登录或会话已过期")
 
-    if not new_password or len(new_password) < 6:
+    if not body.new_password or len(body.new_password) < 6:
         raise HTTPException(status_code=400, detail="新密码长度不能少于6位")
 
-    user.password_hash = _hash_password(new_password)
+    user.password_hash = _hash_password(body.new_password)
     await db.flush()
 
     delete_session(token)

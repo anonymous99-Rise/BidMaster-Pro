@@ -7,7 +7,8 @@ from urllib.parse import quote_plus
 
 class Settings(BaseSettings):
     app_name: str = "智能招投标平台"
-    debug: bool = True
+    # 默认关闭: debug 会把 traceback/SQL 回传给客户端, 生产必须显式开启
+    debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
 

@@ -131,8 +131,9 @@ if _extra_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_electron_origins,
-    # file:// 页面发起跨域请求时 Origin 为 "null"，桌面客户端依赖此正则放行
-    allow_origin_regex=r"^(https?://.*|null|file://|app://\..*)$",
+    # 只放行桌面客户端的 file:///"null"/app:// 来源;
+    # 任意 http(s) 站点不再通配放行, 自定义域名用 ALLOWED_ORIGINS 环境变量追加
+    allow_origin_regex=r"^(null|file://|app://\..*)$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent", "X-Requested-With", "X-API-Key"],

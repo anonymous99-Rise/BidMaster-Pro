@@ -55,7 +55,8 @@ async def create_project(
             raise HTTPException(status_code=400, detail=f"不支持的文件格式: {file_ext}")
         upload_dir = Path(f"./projects/{project.id}")
         upload_dir.mkdir(parents=True, exist_ok=True)
-        file_path = upload_dir / tender_file.filename
+        # 只取基础文件名, 防止路径穿越
+        file_path = upload_dir / Path(tender_file.filename).name
         content = await tender_file.read()
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(status_code=400, detail=f"文件大小超过限制({MAX_FILE_SIZE // 1024 // 1024}MB)")

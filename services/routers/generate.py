@@ -20,11 +20,12 @@ from sqlalchemy import select
 from services.database import get_db
 from services.models import Project, Document, Analysis, Outline, Chapter, ProjectStatus
 from services.llm_factory import get_llm_gateway
+from services.middleware.rbac_middleware import get_current_user
 from core.skill_engine.base import SkillContext
 from core.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/task/{task_id}")
@@ -713,6 +714,7 @@ async def stream_generate_chapter(
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
+        await db.close()
         raise HTTPException(status_code=404, detail="项目不存在")
 
     chapter = None
@@ -882,6 +884,9 @@ async def stream_generate_chapter(
 
     outline_id = outline.id if outline else None
 
+    # 主协程查询已结束, generator 内部自开 persist 会话, 归还连接避免泄漏
+    await db.close()
+
     async def event_generator():
         collected_content = []
         try:
@@ -990,6 +995,7 @@ async def stream_generate_all_chapters(
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
+        await db.close()
         raise HTTPException(status_code=404, detail="项目不存在")
 
     outline_result = await db.execute(
@@ -997,15 +1003,18 @@ async def stream_generate_all_chapters(
     )
     outline = outline_result.scalar_one_or_none()
     if not outline or not outline.tree:
+        await db.close()
         raise HTTPException(status_code=400, detail="请先生成大纲")
 
     tree = outline.tree if isinstance(outline.tree, dict) else {}
     chapters_list = tree.get("chapters", []) if isinstance(tree, dict) else []
     if not chapters_list:
+        await db.close()
         raise HTTPException(status_code=400, detail="大纲章节为空")
 
     all_chapters = _collect_chapter_ids(chapters_list)
     if not all_chapters:
+        await db.close()
         raise HTTPException(status_code=400, detail="大纲中无有效章节")
 
     doc_result = await db.execute(
@@ -1021,6 +1030,9 @@ async def stream_generate_all_chapters(
     mandatory_reqs = _extract_mandatory_requirements(analysis)
 
     gateway = get_llm_gateway()
+
+    # 主协程查询已结束, generator 内部自开 persist 会话, 归还连接避免泄漏
+    await db.close()
 
     async def batch_event_generator():
         total = len(all_chapters)

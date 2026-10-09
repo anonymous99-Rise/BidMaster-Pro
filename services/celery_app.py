@@ -18,6 +18,11 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_acks_late=True,
+    # redis broker 下 acks_late 任务依赖 visibility_timeout 归还未确认消息,
+    # 默认 1h 小于长任务耗时会导致重复投递
+    broker_transport_options={"visibility_timeout": 3600 * 12},
+    result_backend_transport_options={"visibility_timeout": 3600 * 12},
+    visibility_timeout=3600 * 12,
     worker_prefetch_multiplier=1,
     beat_schedule={
         "news-monitor": {
@@ -28,6 +33,25 @@ celery_app.conf.update(
 )
 
 
+def _run_task(coro_factory):
+    """celery 任务公共执行器: 每任务独立 event loop, 结束后 dispose 全局 engine
+
+    asyncpg 连接绑定创建时的 event loop, 而 celery 每个任务都跑在新 loop 里,
+    复用全局 engine 的连接池会跨 loop 报错 —— 任务结束后统一 dispose,
+    下个任务自动重建全新 engine。
+    """
+    import asyncio
+
+    async def _runner():
+        from services.database import close_db
+        try:
+            return await coro_factory()
+        finally:
+            await close_db()
+
+    return asyncio.run(_runner())
+
+
 @celery_app.task(name="services.celery_app.run_news_monitor", bind=True)
 def run_news_monitor(self):
     """定时聚合采集: 每小时抓取所有 enabled 数据源并入库
@@ -35,14 +59,11 @@ def run_news_monitor(self):
     此前该任务只遍历任务列表并返回 "processed",不抓任何数据,
     导致"今日热点/推荐"完全依赖手动点击。现改为真实执行聚合。
     """
-    import asyncio
-
     async def _run():
         from sqlalchemy import select
-        from services.database import get_engine, async_session
+        from services.database import async_session
         from services.models import CompanyProfile
 
-        engine = get_engine()
         async with async_session()() as db:
             from services.news.aggregate_service import run_aggregation
 
@@ -63,17 +84,11 @@ def run_news_monitor(self):
             await db.commit()
             return result
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_task(_run)
 
 
 @celery_app.task(name="services.celery_app.run_full_check", bind=True)
 def run_full_check(self, project_id: str):
-    import asyncio
-
     async def _run():
         from services.routers.check import _get_tender_and_bid_text
         from services.database import async_session
@@ -95,17 +110,11 @@ def run_full_check(self, project_id: str):
             result = await skill.safe_execute(ctx)
             return {"success": result.success, "data": result.data}
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_task(_run)
 
 
 @celery_app.task(name="services.celery_app.run_batch_format", bind=True)
 def run_batch_format(self, file_paths: list[str], template: str = "default"):
-    import asyncio
-
     async def _run():
         from services.format.skills.docx_format_skill import DocxFormatSkill
         from services.llm_factory import get_llm_gateway
@@ -123,8 +132,4 @@ def run_batch_format(self, file_paths: list[str], template: str = "default"):
             results.append({"file": fp, "success": result.success, "output": result.data.get("output_path") if result.success else result.error})
         return results
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_task(_run)

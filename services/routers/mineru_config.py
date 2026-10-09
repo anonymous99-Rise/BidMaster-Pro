@@ -17,9 +17,10 @@ from core.ocr import (
 from core.settings import get_settings
 from services.database import get_db
 from services.llm_factory import get_llm_gateway
+from services.middleware.rbac_middleware import get_current_user
 from core.skill_engine.base import SkillContext
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 MAX_OCR_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB
 

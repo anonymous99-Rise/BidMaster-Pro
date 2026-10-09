@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,7 +64,10 @@ class BusinessValueScorer:
             return 0.5
         try:
             deadline = datetime.fromisoformat(str(deadline_str).replace("Z", "+00:00"))
-            days_left = (deadline - datetime.now()).days
+            # 无时区的按 UTC 处理, 避免 aware/naive 比较抛 TypeError
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            days_left = (deadline - datetime.now(timezone.utc)).days
             if days_left < 0:
                 return 0.0
             if days_left <= 1:
@@ -132,7 +135,10 @@ class BusinessValueScorer:
                 pub = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
             else:
                 return 0.5
-            hours_ago = (datetime.now() - pub).total_seconds() / 3600
+            # 无时区的按 UTC 处理, 避免 aware/naive 比较抛 TypeError
+            if pub.tzinfo is None:
+                pub = pub.replace(tzinfo=timezone.utc)
+            hours_ago = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
             if hours_ago <= 6:
                 return 1.0
             if hours_ago <= 24:

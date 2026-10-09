@@ -89,7 +89,8 @@ def extract_amount(text: str) -> Optional[float]:
     m = _AMOUNT_ZWAN.search(text)
     if m:
         try:
-            val = float(m.group(1).replace(",", "").replace(",", ""))
+            # 半角/全角逗号都可能是千分位分隔符
+            val = float(m.group(1).replace(",", "").replace("，", ""))
             return val
         except ValueError:
             pass
@@ -97,7 +98,7 @@ def extract_amount(text: str) -> Optional[float]:
     m = _AMOUNT_YUAN.search(text)
     if m:
         try:
-            val = float(m.group(1).replace(",", "").replace(",", ""))
+            val = float(m.group(1).replace(",", "").replace("，", ""))
             return val / 10000.0
         except ValueError:
             pass

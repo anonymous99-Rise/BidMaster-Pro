@@ -153,8 +153,9 @@ export default function SettingsPage() {
       }
       if (agentsRes.status === 'fulfilled') {
         setAgents(agentsRes.value.data.agents || []);
-        if (agentsRes.value.data.agents?.length > 0 && !expandedAgent) {
-          setExpandedAgent(agentsRes.value.data.agents[0].name);
+        if (agentsRes.value.data.agents?.length > 0) {
+          // 函数式更新读取最新值, 避免 expandedAgent 进入依赖导致每次展开都重新拉取全部配置
+          setExpandedAgent(prev => prev || agentsRes.value.data.agents[0].name);
         }
       }
       if (configsRes.status === 'fulfilled') {
@@ -163,7 +164,7 @@ export default function SettingsPage() {
     } catch (e) {
       console.error('加载配置失败', e);
     }
-  }, [expandedAgent]);
+  }, []);
 
   const loadLlmConfigs = useCallback(async () => {
     setLlmConfigsLoading(true);
@@ -244,7 +245,8 @@ export default function SettingsPage() {
   };
 
   const handleSaveConfig = async () => {
-    if (!llmConfigDialog.providerId || !llmConfigDialog.apiKey) {
+    const isCreate = llmConfigDialog.mode === 'create';
+    if (!llmConfigDialog.providerId || (isCreate && !llmConfigDialog.apiKey)) {
       setTestResult({ success: false, message: '请填写供应商和 API Key' });
       return;
     }
@@ -268,7 +270,8 @@ export default function SettingsPage() {
       } else {
         await llmApi.updateConfig(llmConfigDialog.configId!, {
           display_name: llmConfigDialog.displayName,
-          api_key: llmConfigDialog.apiKey,
+          // 编辑时留空 = 保留原 Key (后端仅在 api_key 非 null 时更新)
+          ...(llmConfigDialog.apiKey ? { api_key: llmConfigDialog.apiKey } : {}),
           api_base: llmConfigDialog.apiBase,
           default_model: llmConfigDialog.defaultModel,
           enabled: llmConfigDialog.enabled,
