@@ -194,7 +194,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
-    image: bidmaster-pro-api:latest
+    # 本机自建镜像默认; 对接 ghcr.io 发布版时在 .env 设 API_IMAGE=ghcr.io/<owner>/bidmaster-pro:<tag>
+    image: ${API_IMAGE:-bidmaster-pro-api:latest}
     restart: unless-stopped
     ports:
       - "${API_PORT:-8000}:8000"
@@ -226,7 +227,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
-    image: bidmaster-pro-api:latest
+    image: ${API_IMAGE:-bidmaster-pro-api:latest}
     restart: unless-stopped
     command: celery -A services.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-2}
     environment: *api-env
@@ -249,7 +250,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
-    image: bidmaster-pro-api:latest
+    image: ${API_IMAGE:-bidmaster-pro-api:latest}
     restart: unless-stopped
     command: celery -A services.celery_app beat --loglevel=info
     environment: *api-env
