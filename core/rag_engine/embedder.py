@@ -19,7 +19,13 @@ class Embedder:
 
     async def _local_embed(self, texts: List[str]) -> List[List[float]]:
         if self._local_model is None:
-            from sentence_transformers import SentenceTransformer
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as e:
+                raise RuntimeError(
+                    "本地向量化需要安装可选依赖: pip install -e \".[local-embedding]\"; "
+                    "或改用 API 模式 (embedding_mode=api)"
+                ) from e
             self._local_model = SentenceTransformer("BAAI/bge-m3")
         loop = asyncio.get_event_loop()
         embeddings = await loop.run_in_executor(
