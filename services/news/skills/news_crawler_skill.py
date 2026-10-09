@@ -149,7 +149,13 @@ class NewsCrawlerSkill(Skill):
 
         return items[:20]
 
+    # 反爬壳页(如千里马)正文常是 JS 脚本, 提取前先剔除
+    RE_SCRIPT_BLOCK = re.compile(
+        r'<(script|style|noscript)\b[^>]*>.*?</\1\s*>', re.DOTALL | re.IGNORECASE
+    )
+
     def _extract_content(self, html: str) -> str:
+        html = self.RE_SCRIPT_BLOCK.sub(' ', html)
         for pattern in EXTRACT_PATTERNS:
             matches = re.findall(pattern, html, re.DOTALL)
             if matches:

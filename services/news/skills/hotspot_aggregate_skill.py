@@ -52,6 +52,10 @@ _EMOJI_REPLACE_MAP = {
 }
 
 
+# 正文/标题首尾允许剥除的孤立标点与空白 (不含括号引号等有语义的成对符号)
+_TRIM_EDGE_CHARS = "？?！!。.，,、;；:：·…—~ 　\t\r\n"
+
+
 def sanitize_for_mysql(text: str | None) -> str:
     """清理文本,使其可安全写入 MySQL utf8 (3字节) 列
 
@@ -185,14 +189,15 @@ class HotspotAggregateSkill(Skill):
                 )
                 row = existing.scalar_one_or_none()
                 if not row:
-                    # 清理字符串字段,避免 4 字节 UTF-8 字符写入 utf8 列失败
+                    # 清理字符串字段,避免 4 字节 UTF-8 字符写入 utf8 列失败;
+                    # 首尾孤立标点一并剥除 (Epoint 源正文常以"？一、"这类噪音开头)
                     row = HotspotItem(
-                        title=sanitize_for_mysql(it.get("title"))[:500],
+                        title=sanitize_for_mysql(it.get("title")).strip(_TRIM_EDGE_CHARS)[:500],
                         url=sanitize_for_mysql(it.get("url", ""))[:1000],
                         source=sanitize_for_mysql(it.get("source", ""))[:500],
                         sources=it.get("sources", []) or [it.get("source", "")],
                         pub_date=it.get("pub_date", "") or "",
-                        content=sanitize_for_mysql(it.get("content"))[:5000],
+                        content=sanitize_for_mysql(it.get("content")).strip(_TRIM_EDGE_CHARS)[:5000],
                         source_code=sanitize_for_mysql(it.get("source_code", ""))[:100],
                         industry_code=it.get("industry_code", "12"),
                         region=sanitize_for_mysql(it.get("region", ""))[:50],
