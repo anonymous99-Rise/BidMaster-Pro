@@ -25,12 +25,14 @@ government_procurement:
     description: "地方各级政府采购公告(覆盖全国各省)"
   - name: "中国政府采购网-变更公告"
     code: "ccgp_change"
-    type: "rss"
-    url: "http://www.ccgp.gov.cn/cggg/dfgg/rss_change.xml"
+    type: "crawl"
+    url: "http://www.ccgp.gov.cn/cggg/dfgg/gzgg/"
     industry: "04"
     weight: 0.8
-    enabled: false
-    description: "采购公告变更/更正信息"
+    enabled: true
+    # 2026-10-09 实测: 原 rss_change.xml 404; 地方更正公告列表页静态可达,
+    # 条目为 .htm 详情页, 走通用 crawl 解析
+    description: "政府采购更正/变更公告(地方, 覆盖全国各省)"
 
 engineering:
   # 2026-09-30 实测: 新疆/宁夏站点是 Epoint WebBuilder 平台, 栏目页为 JS 壳,
@@ -60,13 +62,18 @@ engineering:
     description: "新疆政府采购交易公告(重点区域)"
   - name: "全国公共资源交易平台"
     code: "ggzy_national"
-    type: "rss"
-    url: "https://www.ggzy.gov.cn/rss.xml"
+    type: "crawl"
+    url: "https://www.ggzy.gov.cn/"
     industry: "01"
     weight: 1.0
-    # 2026-09 实测: 无 RSS; deal.ggzy.gov.cn 搜索接口从服务器不可达
-    enabled: false
-    description: "国家级公共资源交易信息"
+    enabled: true
+    config:
+      max_items: 20
+      include_pattern: "/information/deal/html/a/"
+    # 2026-10-09 实测: 无 RSS; 但首页为 SSR 直出, 公告链接+日期可直接解析
+    # (/information/deal/html/a/{省码}/{类码}/{日期}/{id}.html), 详情页亦为静态 html;
+    # deal.ggzy.gov.cn 搜索子域外网不可达, 走首页"交易公告"最新列表
+    description: "全国公共资源交易公告聚合(招标/中标/更正, 31省)"
   - name: "北京市公共资源交易服务平台"
     code: "ggzy_bj"
     type: "rss"
@@ -111,23 +118,28 @@ engineering:
     enabled: false
 
 tender_service:
-  # 2026-09 实测: /rss.xml 不存在(404), 禁用
+  # 2026-10-09 实测: 无 RSS; 全站挂 interfaceacting/antidom 混淆 JS 加密壳,
+  # 静态抓取只能拿到壳。公告列表在 bulletin 子站 xxfbcmses/search/*.html,
+  # 需无头浏览器执行壳 JS 后从渲染 DOM 提取, 走 browser 类型 (crawl4ai)
   - name: "中国招标投标公共服务平台"
     code: "cebpubservice"
-    type: "rss"
-    url: "https://www.cebpubservice.com/rss.xml"
+    type: "browser"
+    url: "https://bulletin.cebpubservice.com/xxfbcmses/search/bulletin.html?searchDate={today}"
     industry: "01"
     weight: 1.0
-    enabled: false
-    description: "国家级招标投标信息公共服务"
+    enabled: true
+    description: "国家级招标投标公告(招标公告, 当日, 全国各媒介聚合)"
   - name: "比比招标采购网"
     code: "ebidding"
     type: "crawl"
     url: "https://www.ebidding.com/notice"
     industry: "01"
     weight: 0.8
-    # 2026-09-30 实测: 站点不可达
+    # 2026-10-09 实测: 国e平台为 Vue SPA 且公告数据在登录墙后的接口层,
+    # 无头渲染也无法获取; 数据与 cebpubservice 高度重叠(同为国家平台渠道),
+    # 禁用, 由 cebpubservice 覆盖
     enabled: false
+    description: "国e平台公告(登录墙, 由 cebpubservice 覆盖)"
   - name: "千里马招标网"
     code: "qianlima"
     type: "crawl"

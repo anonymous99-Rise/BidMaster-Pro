@@ -294,6 +294,7 @@ class HTMLFetcher(BaseFetcher):
     RE_TAG = None
     RE_WS = None
     RE_DATE = None
+    RE_COMPACT_DATE = None
 
     def __init__(self, timeout: int = 20):
         self.timeout = timeout
@@ -305,6 +306,7 @@ class HTMLFetcher(BaseFetcher):
             HTMLFetcher.RE_TAG = _re.compile(r'<[^>]+>')
             HTMLFetcher.RE_WS = _re.compile(r'\s+')
             HTMLFetcher.RE_DATE = _re.compile(r'(\d{4})[年/\-.](\d{1,2})[月/\-.](\d{1,2})[日号]?')
+            HTMLFetcher.RE_COMPACT_DATE = _re.compile(r'/(\d{4})(\d{2})(\d{2})/')
 
     def _headers(self) -> dict:
         import random
@@ -347,12 +349,21 @@ class HTMLFetcher(BaseFetcher):
             return []
         cfg = source_config.get("config") or {}
         max_items = int(cfg.get("max_items", 12))
+        # include_pattern: href 必须匹配的正则, 过滤导航/统计等噪声链接
+        # (如 ggzy 首页混有 ">>更多"/交易量统计等非公告链接)
+        include_re = None
+        if cfg.get("include_pattern"):
+            try:
+                import re as _re
+                include_re = _re.compile(cfg["include_pattern"])
+            except _re.error:
+                pass
 
         html = await self._get(url)
         if not html:
             raise FetchError(f"HTML 抓取失败: {url}")
 
-        entries = self._parse_list_page(html, url)[:max_items]
+        entries = self._parse_list_page(html, url, include_re=include_re)[:max_items]
         items: List[NewsItem] = []
         for e in entries:
             content = await self._get(e["url"]) if e["url"] else None
@@ -377,7 +388,7 @@ class HTMLFetcher(BaseFetcher):
             ))
         return items
 
-    def _parse_list_page(self, html: str, base_url: str) -> List[dict]:
+    def _parse_list_page(self, html: str, base_url: str, include_re=None) -> List[dict]:
         from urllib.parse import urljoin
 
         items: List[dict] = []
@@ -388,6 +399,8 @@ class HTMLFetcher(BaseFetcher):
             if not hm:
                 continue
             href = hm.group(1)
+            if include_re is not None and not include_re.search(href):
+                continue
             tm = self.RE_TITLE_ATTR.search(attrs)
             title = (tm.group(1).strip() if tm else "") or self.RE_TAG.sub('', inner).strip()
             title = self.RE_WS.sub(' ', title).strip()
@@ -410,6 +423,11 @@ class HTMLFetcher(BaseFetcher):
             m = self.RE_DATE.search(title) or self.RE_DATE.search(href)
             if m:
                 pub_date = f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
+            else:
+                # 紧凑日期段: ggzy.gov.cn href 形如 /.../20261009/xxx.html
+                m2 = self.RE_COMPACT_DATE.search(href)
+                if m2 and 1 <= int(m2.group(2)) <= 12 and 1 <= int(m2.group(3)) <= 31:
+                    pub_date = f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
 
             items.append({"title": title[:150], "url": full_url, "pub_date": pub_date})
         return items
@@ -548,10 +566,95 @@ class EpointFetcher(BaseFetcher):
 
 
 class BrowserFetcher(BaseFetcher):
-    """浏览器自动化抓取器 (二期实现)"""
+    """JS 渲染抓取器 (browser 类型, 基于 crawl4ai 无头浏览器)
+
+    用于反爬加密壳站 — cebpubservice 全站挂 interfaceacting/antidom 混淆 JS,
+    静态 httpx 只能拿到混淆壳, 必须由浏览器执行壳 JS 后从渲染 DOM 提取数据。
+    依赖: pip install crawl4ai && playwright install chromium
+
+    source_config:
+      url: 列表页地址, 支持 {today} 占位符 (YYYY-MM-DD, 用于 searchDate 参数)
+      config.max_items: 最多返回条数 (默认 15)
+    """
+
+    # 渲染后的列表行为 markdown 表格:
+    # | [标题截断](javascript:urlOpen\('uuid'\) "完整标题") | 行业 | 【地区】 | 来源 | 日期 |
+    RE_ROW = None
+    RE_DATE = None
+    RE_REGION = None
+
+    DETAIL_URL = "https://ctbpsp.com/#/bulletinDetail?uuid={uuid}&inpvalue=&dataSource=0&tenderAgency="
+
+    def __init__(self, timeout: int = 60):
+        self.timeout = timeout
+        import re as _re
+        if BrowserFetcher.RE_ROW is None:
+            BrowserFetcher.RE_ROW = _re.compile(
+                r'\|\s*\[([^\]]+)\]\(javascript:urlOpen[^\']*\'([0-9a-f]{16,40})\'[^"]*\"([^\"]*)\"'
+            )
+            BrowserFetcher.RE_DATE = _re.compile(r"(\d{4}-\d{2}-\d{2})")
+            BrowserFetcher.RE_REGION = _re.compile(r"【([^】]{1,12})】")
 
     async def fetch(self, source_config: dict) -> List[NewsItem]:
-        return []
+        url = source_config.get("url", "").replace(
+            "{today}", datetime.now().strftime("%Y-%m-%d"))
+        if not url:
+            return []
+        cfg = source_config.get("config") or {}
+        max_items = int(cfg.get("max_items", 15))
+
+        try:
+            from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
+        except ImportError:
+            raise FetchError(
+                "browser 类型需要 crawl4ai: pip install crawl4ai && playwright install chromium")
+
+        try:
+            # 每源新建 chromium 实例 (启动约 1-2s), 简单可靠
+            async with AsyncWebCrawler(verbose=False, headless=True) as crawler:
+                result = await crawler.arun(
+                    url, config=CrawlerRunConfig(page_timeout=self.timeout * 1000))
+        except Exception as e:
+            raise FetchError(f"JS 渲染抓取失败: {url} ({str(e)[:120]})")
+
+        items = self._parse_markdown(result.markdown or "", source_config)[:max_items]
+        if not items:
+            raise FetchError(f"JS 渲染完成但未解析到公告条目: {url}")
+        return items
+
+    def _parse_markdown(self, md: str, source_config: dict) -> List[NewsItem]:
+        items: List[NewsItem] = []
+        seen = set()
+        for line in md.splitlines():
+            m = self.RE_ROW.search(line)
+            if not m:
+                continue
+            truncated, uuid, full_title = m.group(1).strip(), m.group(2), m.group(3).strip()
+            title = BrowserFetcher._clean_md(full_title or truncated)
+            if len(title) < 8 or uuid in seen:
+                continue
+            seen.add(uuid)
+            # 地区取链接之后的表格列 (标题内也可能含【】, 不能从标题取)
+            region_m = self.RE_REGION.search(line[m.end():])
+            date_m = self.RE_DATE.search(line[m.end():])
+            items.append(NewsItem(
+                title=title[:150],
+                url=self.DETAIL_URL.format(uuid=uuid),
+                source=source_config.get("name", ""),
+                pub_date=date_m.group(1) if date_m else datetime.now().strftime("%Y-%m-%d"),
+                content="",
+                source_code=source_config.get("code", ""),
+                industry_code=source_config.get("industry", ""),
+                region=region_m.group(1) if region_m else "",
+                announce_type=announce_type_from_title(title),
+                extra={"fetch_type": "browser"},
+            ))
+        return items
+
+    @staticmethod
+    def _clean_md(s: str) -> str:
+        import re as _re
+        return _re.sub(r"\s+", " ", s.replace("\\", "")).strip()
 
 
 FETCHER_REGISTRY = {
