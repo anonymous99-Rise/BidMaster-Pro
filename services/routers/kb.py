@@ -46,8 +46,9 @@ ALLOWED_EXTS = {
 }
 MAX_FILE_BYTES = 50 * 1024 * 1024  # 50MB
 
-# 存储根: 可被 BMP_KB_FILES_ROOT 覆盖 (默认 ./kb_files)
-KB_ROOT = os.environ.get("BMP_KB_FILES_ROOT", "./kb_files")
+# 存储根: 可被 BMP_KB_FILES_ROOT 覆盖
+# 默认 ./uploads/kb —— 落在 compose 共享卷 uploads 内, 保证 api 上传的文件 celery-worker 可读
+KB_ROOT = os.environ.get("BMP_KB_FILES_ROOT", "./uploads/kb")
 
 # 子库 → 卡片模型
 _CARD_MODELS = {
