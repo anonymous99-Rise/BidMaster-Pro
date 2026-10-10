@@ -566,18 +566,45 @@ async def approve_card(entity_type: str, card_id: str, db: AsyncSession = Depend
         raise HTTPException(status_code=404, detail="卡片不存在")
     row.is_audited = True
     await db.flush()
+    # 人员证书无独立审核入口, 随所属人员一并入池
+    if entity_type == "personnel":
+        await db.execute(update(KbPersonnelCertificate).where(
+            KbPersonnelCertificate.personnel_id == card_id
+        ).values(is_audited=True))
+    # 关系边随卡片入池同时生效 (设计: 确认后边生效)
+    await db.execute(update(KbEdge).where(
+        or_(
+            (KbEdge.src_type == entity_type) & (KbEdge.src_id == card_id),
+            (KbEdge.dst_type == entity_type) & (KbEdge.dst_id == card_id),
+        )
+    ).values(is_audited=True))
     return {"success": True, "entity_type": entity_type, "id": card_id}
 
 
 @router.post("/review-queue/{entity_type}/{card_id}/reject")
 async def reject_card(entity_type: str, card_id: str, db: AsyncSession = Depends(get_db)):
-    """拒掉这张卡片 (删除)。"""
+    """拒掉这张卡片 (删除), 并清理关联的人员证书与关系边避免悬挂。"""
     model = _CARD_MODELS.get(entity_type)
     if not model:
         raise HTTPException(status_code=400, detail=f"未知实体类型: {entity_type}")
     row = (await db.execute(select(model).where(model.id == card_id))).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="卡片不存在")
+    # 人员被拒: 一并删除其人员证书及边 (证书无独立审核入口, 不会自行入池)
+    if entity_type == "personnel":
+        pcert_ids = (await db.execute(select(KbPersonnelCertificate.id).where(
+            KbPersonnelCertificate.personnel_id == card_id))).scalars().all()
+        for pid in pcert_ids:
+            await db.execute(delete(KbEdge).where(or_(
+                (KbEdge.src_type == "personnel_certificate") & (KbEdge.src_id == pid),
+                (KbEdge.dst_type == "personnel_certificate") & (KbEdge.dst_id == pid),
+            )))
+        await db.execute(delete(KbPersonnelCertificate).where(
+            KbPersonnelCertificate.personnel_id == card_id))
+    await db.execute(delete(KbEdge).where(or_(
+        (KbEdge.src_type == entity_type) & (KbEdge.src_id == card_id),
+        (KbEdge.dst_type == entity_type) & (KbEdge.dst_id == card_id),
+    )))
     await db.delete(row)
     await db.flush()
     return {"success": True, "id": card_id}
