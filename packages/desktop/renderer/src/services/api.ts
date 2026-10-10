@@ -857,6 +857,66 @@ export interface KbOpportunity {
   created_at: string | null;
 }
 
+// ── 初筛/深度分析 (KB-M6/M7) ──
+export interface KbScreenSummary {
+  total: number;
+  matched: number;
+  failed: number;
+  needs_review: number;
+}
+
+export interface KbScreenItem {
+  id?: string;
+  text: string;
+  route: string;
+  verdict: 'matched' | 'failed' | 'needs_review';
+  reason?: string;
+  source?: string;
+  card?: { id?: string; name?: string; category?: string };
+}
+
+export interface KbRedline {
+  section: string;
+  clause: string;
+  severity: string;
+}
+
+export interface KbResponseRow {
+  clause: string;
+  response: string;
+  deviation: string;
+  evidence: (string | undefined)[];
+}
+
+export interface KbTeamResult {
+  max_total: number;
+  cap: number;
+  roster: {
+    project_lead?: { name?: string; level?: string } | null;
+    tech_lead?: { name?: string; level?: string } | null;
+    members: { name?: string; level?: string }[];
+  };
+  score_detail: { lead: number; tech_lead: number; members: number };
+  gaps: string[];
+}
+
+export interface KbPerformanceResult {
+  score: number;
+  cap: number;
+  count_recent_similar: number;
+  gap: string;
+}
+
+export interface KbScoringSummary {
+  team_score: number;
+  team_cap?: number;
+  performance_score: number;
+  performance_cap?: number;
+  total: number;
+  suggestion: string;
+  gaps: string[];
+}
+
 export const kbApi = {
   listCompanies: () => api.get<{ companies: KbCompany[] }>('/kb/companies'),
   createCompany: (data: Partial<KbCompany>) => api.post<KbCompany>('/kb/companies', data),
@@ -935,6 +995,58 @@ export const kbApi = {
     api.post<{ success: boolean; id: string; duplicated: boolean; stage: string }>(
       `/kb/companies/${companyId}/opportunities/from-hotspot`,
       { hotspot_id: hotspotId, stage }),
+
+  // ── 商机初筛 (KB-M6) ──
+  runScreening: (companyId: string, data: {
+    requirements: { id?: string; text: string }[];
+    opportunity_id?: string;
+    use_llm_fallback?: boolean;
+    interpret_json?: Record<string, unknown>;
+  }) => api.post<{
+    success: boolean;
+    screening_id: string;
+    overall: string;
+    summary: KbScreenSummary;
+    items: KbScreenItem[];
+    redlines: KbRedline[];
+    response_table: KbResponseRow[];
+  }>(`/kb/companies/${companyId}/screen`, data),
+  listScreenings: (companyId: string, opportunityId?: string) =>
+    api.get<{ id: string; overall: string; summary: KbScreenSummary; created_at: string | null }[]>(
+      `/kb/companies/${companyId}/screenings`,
+      { params: opportunityId ? { opportunity_id: opportunityId } : {} }),
+  getScreening: (screeningId: string) =>
+    api.get<{
+      id: string; overall: string; summary: KbScreenSummary;
+      items: KbScreenItem[]; redlines: KbRedline[]; response_table: KbResponseRow[];
+    }>(`/kb/screenings/${screeningId}`),
+  correctScreening: (screeningId: string, data: {
+    clause_text: string; original_verdict?: string;
+    corrected_verdict: 'matched' | 'failed'; reason?: string;
+  }) => api.post<{ success: boolean; fingerprint: string }>(
+    `/kb/screenings/${screeningId}/correct`, data),
+  downloadResponseTable: (screeningId: string) =>
+    `/kb/screenings/${screeningId}/docs/response-table`,
+  downloadCommitmentLetter: (companyId: string, screeningId = '') =>
+    `/kb/companies/${companyId}/docs/commitment-letter${screeningId ? `?screening_id=${screeningId}` : ''}`,
+  downloadSmeDeclaration: (companyId: string) =>
+    `/kb/companies/${companyId}/docs/sme-declaration`,
+
+  // ── 深度分析 (KB-M7) ──
+  runAnalysis: (companyId: string, data: {
+    opportunity_id?: string; similar_keywords?: string[]; performance_years?: number;
+  }) => api.post<{
+    success: boolean; report_id: string;
+    team: KbTeamResult; performance: KbPerformanceResult;
+    scoring_summary: KbScoringSummary;
+  }>(`/kb/companies/${companyId}/analyze`, data),
+  listAnalysisReports: (companyId: string) =>
+    api.get<{ id: string; opportunity_id: string; status: string;
+              scoring_summary: KbScoringSummary; created_at: string | null }[]>(
+      `/kb/companies/${companyId}/analysis-reports`),
+  getAnalysisReport: (reportId: string) =>
+    api.get<{ id: string; team: KbTeamResult; performance: KbPerformanceResult;
+              scoring_summary: KbScoringSummary }>(`/kb/analysis-reports/${reportId}`),
 };
 
 export const knowledgeApi = {

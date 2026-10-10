@@ -218,7 +218,7 @@ export default function LoginPage() {
         textAlign: 'center', fontSize: '12px', color: 'rgba(255,255,255,0.75)',
         zIndex: 5,
       }}>
-        © 2026 某科技企业
+        © 2026 智能招投标平台
       </div>
 
       {/* CSS Animations */}

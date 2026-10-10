@@ -1,4 +1,4 @@
-"""知识库 (KB) 路由 — 公司空间 / 子库 / 上传构建 / 人审队列 / 证书字典 / 到期提醒。
+"""知识库 (KB) 路由 — 工作空间 / 子库 / 上传构建 / 人审队列 / 证书字典 / 到期提醒。
 
 设计: 公司=多租户空间 (company_id 贯穿); 一切 agent 产出先进人审队列
 (is_audited=false); 人工确认后 is_audited=true 才进自动勾对池。
@@ -23,6 +23,7 @@ from services.database import get_db
 from services.middleware.api_key import require_any_auth, AuthPrincipal
 from services.models import (
     KbAchievement,
+    KbAnalysisReport,
     KbBuildTask,
     KbCertificate,
     KbCertType,
@@ -34,6 +35,8 @@ from services.models import (
     KbFinancial,
     KbPersonnel,
     KbPersonnelCertificate,
+    KbScreeningCorrection,
+    KbScreeningResult,
     HotspotItem,
 )
 
@@ -103,7 +106,7 @@ async def _get_company(company_id: str, db: AsyncSession) -> KbCompany:
         select(KbCompany).where(KbCompany.id == company_id)
     )).scalar_one_or_none()
     if not row:
-        raise HTTPException(status_code=404, detail="公司空间不存在")
+        raise HTTPException(status_code=404, detail="工作空间不存在")
     return row
 
 
@@ -132,7 +135,7 @@ def _save_bytes(company_id: str, filename: str, data: bytes, rel_dir: str = "") 
     return target
 
 
-# ================= 公司空间 CRUD =================
+# ================= 工作空间 CRUD =================
 
 class CompanyCreate(BaseModel):
     name: str
@@ -174,7 +177,7 @@ async def create_company(
         select(KbCompany).where(KbCompany.name == payload.name)
     )).scalar_one_or_none()
     if exists:
-        raise HTTPException(status_code=400, detail="公司空间已存在(同名)")
+        raise HTTPException(status_code=400, detail="工作空间已存在(同名)")
 
     first = (await db.execute(select(func.count(KbCompany.id)))).scalar() or 0
     company = KbCompany(
@@ -183,7 +186,7 @@ async def create_company(
         legal_person=payload.legal_person,
         industry_code=payload.industry_code or "12",
         region=payload.region, contact=payload.contact,
-        description=payload.description, is_default=(first == 0),
+        description=payload.description,
         created_by=principal.identifier,
     )
     db.add(company)
@@ -216,8 +219,6 @@ async def update_company(
 @router.delete("/companies/{company_id}")
 async def delete_company(company_id: str, db: AsyncSession = Depends(get_db)):
     c = await _get_company(company_id, db)
-    if c.is_default:
-        raise HTTPException(status_code=400, detail="默认公司空间不可删除，可先将其他公司设为默认")
     # 级联清理: 先子后父 (FK 指向 kb_companies.id), 再删来源文件与磁盘
     for model in (
         KbEdge, KbPersonnelCertificate, KbPersonnel, KbCertificate,
@@ -955,3 +956,442 @@ def _opportunity_dict(r: HotspotItem) -> dict:
         "company_id": r.company_id or "",
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
+
+
+# ================================================================
+# W3 商机初筛 (KB-M6): 资格条件逐条勾对 → 三态 + 三大产物
+# ================================================================
+
+class ScreenRequest(BaseModel):
+    """发起初筛: requirements 为资格条款列表(通常来自解读 qualification_table)。"""
+    requirements: list[dict]            # [{"id": "B1-1", "text": "..."}]
+    opportunity_id: str = ""
+    use_llm_fallback: bool = False
+    interpret_json: dict | None = None  # 解读产物(用于红线清单提取), 可选
+
+
+async def _load_kb_cards(db: AsyncSession, company_id: str) -> list[dict]:
+    """勾对证据池: 该公司已人审的 证书/财务/信用 卡片。"""
+    cards: list[dict] = []
+    certs = (await db.execute(
+        select(KbCertificate).where(
+            KbCertificate.company_id == company_id,
+            KbCertificate.is_audited == True,  # noqa: E712
+        ))).scalars().all()
+    for c in certs:
+        cards.append({"id": str(c.id), "kind": "certificate",
+                      "name": c.name, "holder": c.holder,
+                      "expiry_date": c.expiry_date, "status": c.status,
+                      "is_audited": c.is_audited})
+    credits = (await db.execute(
+        select(KbCredit).where(
+            KbCredit.company_id == company_id,
+            KbCredit.is_audited == True,  # noqa: E712
+        ))).scalars().all()
+    for c in credits:
+        cards.append({"id": str(c.id), "kind": "credit",
+                      "name": c.title or c.credit_type, "holder": c.holder,
+                      "expiry_date": "", "status": "",
+                      "is_audited": c.is_audited})
+    return cards
+
+
+@router.post("/companies/{company_id}/screen")
+async def run_screening(company_id: str, body: ScreenRequest, db: AsyncSession = Depends(get_db)):
+    """对一组资格条件做初筛, 结果落库并返回三态+三大产物。"""
+    from services.kb.screening import (
+        screen_requirements, build_response_table, extract_redlines,
+        collect_company_values,
+    )
+    if not body.requirements:
+        raise HTTPException(status_code=400, detail="requirements 不能为空")
+
+    company = (await db.execute(
+        select(KbCompany).where(KbCompany.id == company_id)
+    )).scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="公司不存在")
+
+    # 修正回流映射: 条款指纹 → 人工修正结论
+    corr_rows = (await db.execute(
+        select(KbScreeningCorrection).where(
+            KbScreeningCorrection.company_id == company_id)
+    )).scalars().all()
+    corrections = {c.fingerprint: c.corrected_verdict for c in corr_rows}
+
+    kb_cards = await _load_kb_cards(db, company_id)
+    company_values = await collect_company_values(db, company_id)
+
+    result = screen_requirements(body.requirements, kb_cards, company_values, corrections)
+
+    # LLM 兜底: needs_review 且未走修正的模糊条款
+    if body.use_llm_fallback:
+        from services.kb.screening import llm_fallback_clause
+        from services.llm_factory import get_llm_gateway
+        try:
+            llm = get_llm_gateway()
+        except Exception:
+            llm = None
+        if llm is not None:
+            for item in result["items"]:
+                if item.get("verdict") == "needs_review" and item.get("source") == "evidence":
+                    fb = await llm_fallback_clause(llm, item.get("text", ""))
+                    if fb:
+                        item["llm_fallback"] = fb
+                        if fb["verdict"] in ("matched", "failed"):
+                            item["verdict"] = fb["verdict"]
+                            item["source"] = "llm"
+            result["stats"] = {
+                "total": len(result["items"]),
+                "matched": sum(1 for r in result["items"] if r["verdict"] == "matched"),
+                "failed": sum(1 for r in result["items"] if r["verdict"] == "failed"),
+                "needs_review": sum(1 for r in result["items"] if r["verdict"] == "needs_review"),
+            }
+            ok = all(r["verdict"] == "matched" for r in result["items"])
+            bad = any(r["verdict"] == "failed" for r in result["items"])
+            result["overall"] = "passed" if ok else ("failed" if bad else "needs_review")
+
+    response_table = build_response_table(body.requirements, result)
+    redlines = extract_redlines(body.interpret_json) if body.interpret_json else []
+
+    row = KbScreeningResult(
+        company_id=company_id,
+        opportunity_id=body.opportunity_id or None,
+        status="done", overall=result["overall"],
+        requirements=body.requirements, summary=result["stats"],
+        items=result["items"], redlines=redlines, response_table=response_table,
+    )
+    db.add(row)
+    await db.commit()
+    return {"success": True, "screening_id": str(row.id), "overall": result["overall"],
+            "summary": result["stats"], "items": result["items"],
+            "redlines": redlines, "response_table": response_table}
+
+
+@router.get("/companies/{company_id}/screenings")
+async def list_screenings(company_id: str, db: AsyncSession = Depends(get_db),
+                          opportunity_id: str = Query("")):
+    """历史初筛结果列表。"""
+    q = select(KbScreeningResult).where(KbScreeningResult.company_id == company_id)
+    if opportunity_id:
+        q = q.where(KbScreeningResult.opportunity_id == opportunity_id)
+    q = q.order_by(KbScreeningResult.created_at.desc()).limit(50)
+    rows = (await db.execute(q)).scalars().all()
+    return [{"id": str(r.id), "opportunity_id": r.opportunity_id or "",
+             "overall": r.overall, "summary": r.summary,
+             "created_at": r.created_at.isoformat() if r.created_at else None}
+            for r in rows]
+
+
+@router.get("/screenings/{screening_id}")
+async def get_screening(screening_id: str, db: AsyncSession = Depends(get_db)):
+    """单条初筛结果详情 (含逐条结论/红线/响应表)。"""
+    r = (await db.execute(
+        select(KbScreeningResult).where(KbScreeningResult.id == screening_id)
+    )).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="初筛结果不存在")
+    return {"id": str(r.id), "company_id": r.company_id,
+            "opportunity_id": r.opportunity_id or "", "overall": r.overall,
+            "summary": r.summary, "items": r.items, "redlines": r.redlines,
+            "response_table": r.response_table,
+            "created_at": r.created_at.isoformat() if r.created_at else None}
+
+
+class CorrectionRequest(BaseModel):
+    """人工修正回流: 改判某条款, 后续同条款直接沿用。"""
+    clause_text: str
+    original_verdict: str = ""
+    corrected_verdict: str          # matched/failed
+    reason: str = ""
+
+
+@router.post("/screenings/{screening_id}/correct")
+async def correct_screening(screening_id: str, body: CorrectionRequest,
+                            db: AsyncSession = Depends(get_db)):
+    """人工改判初筛结论 → 落修正表回流 (产物指纹按条款文本)。"""
+    import uuid as _uuid
+    from services.kb.screening import _RULE_PATTERNS  # noqa: F401
+    if body.corrected_verdict not in ("matched", "failed"):
+        raise HTTPException(status_code=400, detail="corrected_verdict 只能是 matched/failed")
+    r = (await db.execute(
+        select(KbScreeningResult).where(KbScreeningResult.id == screening_id)
+    )).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="初筛结果不存在")
+    fp = str(_uuid.uuid5(_uuid.NAMESPACE_URL, body.clause_text))[:32]
+    corr = KbScreeningCorrection(
+        company_id=r.company_id, fingerprint=fp,
+        clause_text=body.clause_text[:2000],
+        original_verdict=body.original_verdict,
+        corrected_verdict=body.corrected_verdict, reason=body.reason,
+    )
+    db.add(corr)
+    await db.commit()
+    return {"success": True, "fingerprint": fp}
+
+
+# ================================================================
+# W4 深度分析 (KB-M7): 团队优化器 + 业绩算分 → 评分报告
+# ================================================================
+
+class AnalyzeRequest(BaseModel):
+    """发起深度分析。similar_keywords 用于业绩匹配 (为空=全部类似)。"""
+    opportunity_id: str = ""
+    similar_keywords: list[str] = []
+    performance_years: int = 3
+
+
+@router.post("/companies/{company_id}/analyze")
+async def run_deep_analysis(company_id: str, body: AnalyzeRequest,
+                            db: AsyncSession = Depends(get_db)):
+    """同步执行深度分析 (纯规则秒级): 团队优化器+业绩算分 → 报告行落库。
+
+    数据源: 该公司 personnel/personnel_certificates/achievements 已人审卡。
+    """
+    from services.kb.scoring import optimize_team, score_performance
+    from datetime import datetime as _dt
+
+    company = (await db.execute(
+        select(KbCompany).where(KbCompany.id == company_id)
+    )).scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="公司不存在")
+
+    personnel_rows = (await db.execute(
+        select(KbPersonnel).where(
+            KbPersonnel.company_id == company_id,
+            KbPersonnel.is_audited == True,  # noqa: E712
+        ))).scalars().all()
+    certs_rows = (await db.execute(
+        select(KbPersonnelCertificate).where(
+            KbPersonnelCertificate.company_id == company_id,
+            KbPersonnelCertificate.is_audited == True,  # noqa: E712
+        ))).scalars().all()
+    certs_by_person: dict = {}
+    for c in certs_rows:
+        certs_by_person.setdefault(str(c.personnel_id), []).append({
+            "cert_type": c.cert_type, "level": c.level,
+            "valid_until": c.expiry_date or "",
+        })
+    personnel = [{"id": str(p.id), "name": p.name} for p in personnel_rows]
+    team = optimize_team(personnel, certs_by_person)
+
+    ach_rows = (await db.execute(
+        select(KbAchievement).where(
+            KbAchievement.company_id == company_id,
+            KbAchievement.is_audited == True,  # noqa: E712
+        ))).scalars().all()
+    achievements = [{
+        "project_name": a.project_name, "client_name": a.client_name,
+        "contract_amount": a.contract_amount, "sign_date": a.sign_date,
+        "announce_date": a.announce_date, "bid_result": a.bid_result,
+    } for a in ach_rows]
+    perf = score_performance(achievements,
+                             tuple(body.similar_keywords),
+                             years=body.performance_years)
+
+    # 汇总与结论: 团队+业绩为规则可算部分, 满分 20 (15+5)
+    team_score = team.get("max_total", 0.0)
+    perf_score = perf.get("score", 0.0)
+    suggestion = ("建议投" if (team_score + perf_score) >= 13
+                  else "谨慎" if (team_score + perf_score) >= 7 else "放弃")
+    report = KbAnalysisReport(
+        company_id=company_id, opportunity_id=body.opportunity_id or None,
+        status="done", team=team, performance=perf,
+        scoring_summary={
+            "team_score": team_score, "team_cap": team.get("cap"),
+            "performance_score": perf_score, "performance_cap": perf.get("cap"),
+            "total": team_score + perf_score,
+            "suggestion": suggestion,
+            "gaps": team.get("gaps", []) + ([perf.get("gap")] if perf.get("gap") else []),
+        },
+        started_at=_dt.utcnow(), finished_at=_dt.utcnow(),
+    )
+    db.add(report)
+    await db.commit()
+    return {"success": True, "report_id": str(report.id),
+            "team": team, "performance": perf, "scoring_summary": report.scoring_summary}
+
+
+@router.get("/companies/{company_id}/analysis-reports")
+async def list_analysis_reports(company_id: str, db: AsyncSession = Depends(get_db)):
+    """历史分析报告列表。"""
+    rows = (await db.execute(
+        select(KbAnalysisReport)
+        .where(KbAnalysisReport.company_id == company_id)
+        .order_by(KbAnalysisReport.created_at.desc()).limit(50)
+    )).scalars().all()
+    return [{"id": str(r.id), "opportunity_id": r.opportunity_id or "",
+             "status": r.status, "scoring_summary": r.scoring_summary,
+             "report_path": r.report_path,
+             "created_at": r.created_at.isoformat() if r.created_at else None}
+            for r in rows]
+
+
+@router.get("/analysis-reports/{report_id}")
+async def get_analysis_report(report_id: str, db: AsyncSession = Depends(get_db)):
+    """单条分析报告详情。"""
+    r = (await db.execute(
+        select(KbAnalysisReport).where(KbAnalysisReport.id == report_id)
+    )).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return {"id": str(r.id), "company_id": r.company_id,
+            "opportunity_id": r.opportunity_id or "", "status": r.status,
+            "team": r.team, "performance": r.performance,
+            "scoring_summary": r.scoring_summary, "report_path": r.report_path,
+            "created_at": r.created_at.isoformat() if r.created_at else None}
+
+
+# ================================================================
+# 商务文函自动化 (KB-M7 第三关落点): 响应表/承诺函/声明函 docx 下载
+# ================================================================
+
+def _docx_response_table(screening: KbScreeningResult, company_name: str) -> bytes:
+    """产物③落地: 商务要求响应表 docx。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading(f"{company_name} — 商务要求响应表", level=1)
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    for i, h in enumerate(["序号", "招标文件要求", "投标响应", "偏离情况"]):
+        hdr[i].text = h
+        for p in hdr[i].paragraphs:
+            for run in p.runs:
+                run.font.bold = True
+                run.font.size = Pt(10.5)
+    for i, row in enumerate(screening.response_table or [], 1):
+        cells = table.add_row().cells
+        cells[0].text = str(i)
+        cells[1].text = row.get("clause", "")
+        cells[2].text = row.get("response", "")
+        cells[3].text = row.get("deviation", "")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _docx_commitment_letter(company: KbCompany, requirements: list[dict]) -> bytes:
+    """资格承诺函 docx: 逐条承诺满足资格审查要求。"""
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("资格承诺函")
+    run.font.size = Pt(18)
+    run.font.bold = True
+    doc.add_paragraph(
+        f"致:招标人\n\n我方 {company.name} 参加本项目投标, 郑重承诺满足下列资格要求:")
+    for i, req in enumerate(requirements, 1):
+        text = req.get("text") or req.get("clause") or ""
+        doc.add_paragraph(f"{i}. {text}")
+    doc.add_paragraph(
+        "\n如经查实我方存在虚假承诺, 自愿接受取消投标资格、没收投标保证金等处理。")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(f"\n投标人: {company.name}\n日期: ____年____月____日")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _docx_sme_declaration(company: KbCompany) -> bytes:
+    """中小企业声明函 docx (自动按企业规模留空待填, 附占位说明)。"""
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("中小企业声明函")
+    run.font.size = Pt(18)
+    run.font.bold = True
+    doc.add_paragraph(
+        f"本公司 {company.name} 郑重声明, 根据《政府采购促进中小企业发展管理办法》"
+        "(财库〔2020〕46号)的规定, 本公司参加本项目采购活动, 属于_____行业,"
+        "从业人员____人, 营业收入____万元, 资产总额____万元, 属于(中型企业/小型企业/微型企业)。"
+        "\n本公司对上述声明内容的真实性负责。如有虚假, 依法承担相应责任。")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(f"\n企业名称(盖章): {company.name}\n日期: ____年____月____日")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/screenings/{screening_id}/docs/response-table")
+async def download_response_table(screening_id: str, db: AsyncSession = Depends(get_db)):
+    """下载商务要求响应表 docx。"""
+    from fastapi.responses import Response
+    r = (await db.execute(
+        select(KbScreeningResult).where(KbScreeningResult.id == screening_id)
+    )).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="初筛结果不存在")
+    company = (await db.execute(
+        select(KbCompany).where(KbCompany.id == r.company_id)
+    )).scalar_one_or_none()
+    data = _docx_response_table(r, company.name if company else "")
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition":
+                 f"attachment; filename=response_table_{screening_id[:8]}.docx"},
+    )
+
+
+@router.get("/companies/{company_id}/docs/commitment-letter")
+async def download_commitment_letter(company_id: str, db: AsyncSession = Depends(get_db),
+                                     screening_id: str = Query("")):
+    """下载资格承诺函 docx (有初筛结果按其条款, 否则取最近一次)。"""
+    from fastapi.responses import Response
+    company = (await db.execute(
+        select(KbCompany).where(KbCompany.id == company_id)
+    )).scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="公司不存在")
+    requirements: list[dict] = []
+    if screening_id:
+        r = (await db.execute(
+            select(KbScreeningResult).where(KbScreeningResult.id == screening_id)
+        )).scalar_one_or_none()
+        if r:
+            requirements = r.requirements or []
+    if not requirements:
+        latest = (await db.execute(
+            select(KbScreeningResult)
+            .where(KbScreeningResult.company_id == company_id)
+            .order_by(KbScreeningResult.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        requirements = (latest.requirements if latest else []) or []
+    data = _docx_commitment_letter(company, requirements)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=commitment_letter.docx"},
+    )
+
+
+@router.get("/companies/{company_id}/docs/sme-declaration")
+async def download_sme_declaration(company_id: str, db: AsyncSession = Depends(get_db)):
+    """下载中小企业声明函 docx。"""
+    from fastapi.responses import Response
+    company = (await db.execute(
+        select(KbCompany).where(KbCompany.id == company_id)
+    )).scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=404, detail="公司不存在")
+    data = _docx_sme_declaration(company)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=sme_declaration.docx"},
+    )

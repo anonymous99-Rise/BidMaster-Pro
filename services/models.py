@@ -729,7 +729,57 @@ class KbBuildTask(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class KbCollectTask(Base):
+class KbScreeningResult(Base):
+    """W3 初筛结果 (KB-M6): 一次对某商机的资格条件勾对快照。
+
+    requirements/summary/items 全量 JSON 落库, 供报告/响应表/人审复核。
+    """
+    __tablename__ = "kb_screening_results"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    opportunity_id = Column(String(36), ForeignKey("hotspot_items.id"), nullable=True, index=True)
+    status = Column(String(20), default="done", index=True)   # running/done/failed
+    overall = Column(String(20), default="")                  # passed/failed/needs_review
+    requirements = Column(JSON, default=list)                 # 输入条款
+    summary = Column(JSON, default=dict)                      # {total, matched, failed, needs_review}
+    items = Column(JSON, default=list)                        # 逐条结论(含证据矩阵)
+    redlines = Column(JSON, default=list)                     # 产物②废标红线清单
+    response_table = Column(JSON, default=list)               # 产物③响应表草稿
+    error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbScreeningCorrection(Base):
+    """人工修正回流 (KB-M6): 改判记录, 同条款指纹下次直接沿用。"""
+    __tablename__ = "kb_screening_corrections"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    fingerprint = Column(String(64), nullable=False, index=True)  # 条款 uuid5 指纹
+    clause_text = Column(Text, default="")
+    original_verdict = Column(String(20), default="")          # 机器原判
+    corrected_verdict = Column(String(20), nullable=False)     # matched/failed
+    reason = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbAnalysisReport(Base):
+    """W4 深度分析报告 (KB-M7): 团队优化器+业绩算分+综合结论, 可下载 docx。"""
+    __tablename__ = "kb_analysis_reports"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    opportunity_id = Column(String(36), ForeignKey("hotspot_items.id"), nullable=True, index=True)
+    status = Column(String(20), default="pending", index=True)  # pending/running/done/failed
+    team = Column(JSON, default=dict)                          # optimize_team 输出
+    performance = Column(JSON, default=dict)                   # score_performance 输出
+    scoring_summary = Column(JSON, default=dict)               # 汇总+建议投/谨慎/放弃
+    report_path = Column(String(500), default="")              # docx 相对路径
+    error = Column(Text, default="")
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     """公开采集任务 (W2 流水线一次运行的记录)。
 
     按企业名搜索已接公告源 → 解析中标/未中标记录 → 去重 → 预填业绩人审队列。

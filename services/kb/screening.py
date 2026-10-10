@@ -258,3 +258,90 @@ def build_response_table(requirements: list[dict], screen_result: dict) -> list[
             "evidence": [c.get("name") for c in [r.get("card")] if c],
         })
     return rows
+
+
+# ── 产物②: 废标红线清单 (从解读 JSON 的废标条款表提取) ─────────────
+_REDLINE_SEVERITY_KW = ("废标", "无效标", "否决", "拒绝", "取消资格", "实质性")
+
+
+def extract_redlines(interpret_json: dict) -> list[dict]:
+    """从解读结果(资格条件表/废标条款表维度)提取废标红线清单。
+
+    interpret_json 为 interpret 产物 dict, 取 disqualification_table /
+    qualification_table 的 rows, 含废标/否决等关键词的行 → 红线条目。
+    """
+    redlines: list[dict] = []
+    for dim in ("disqualification_table", "qualification_table"):
+        data = interpret_json.get(dim) or {}
+        for sec in data.get("sections") or []:
+            cols = sec.get("columns") or []
+            for row in sec.get("rows") or []:
+                cells = row if isinstance(row, list) else [row]
+                text = " | ".join(str(c) for c in cells if c)
+                hit = any(k in text for k in _REDLINE_SEVERITY_KW) \
+                    or "废标" in (sec.get("title") or "")
+                if not hit:
+                    continue
+                redlines.append({
+                    "section": sec.get("title") or dim,
+                    "clause": text[:500],
+                    "severity": "critical",
+                })
+    return redlines
+
+
+async def collect_company_values(db, company_id: str) -> dict:
+    """从知识库汇总数值规则比较用的公司值 (注册资本/营收/负债率/年限)。
+
+    注册资本取证书库营业执照 extra.registered_capital 或财务库最新营收;
+    营收/负债率取 is_audited 的最新财务卡。
+    """
+    from sqlalchemy import select
+    from services.models import KbFinancial, KbCertificate
+
+    values: dict = {}
+    fin = (await db.execute(
+        select(KbFinancial)
+        .where(KbFinancial.company_id == company_id, KbFinancial.is_audited == True)  # noqa: E712
+        .order_by(KbFinancial.year.desc(), KbFinancial.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if fin:
+        if fin.revenue:
+            values["revenue"] = fin.revenue
+        if fin.debt_ratio:
+            values["debt_ratio"] = fin.debt_ratio
+
+    lic = (await db.execute(
+        select(KbCertificate)
+        .where(KbCertificate.company_id == company_id,
+               KbCertificate.name.like("%营业执照%"))
+        .order_by(KbCertificate.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if lic and lic.extra:
+        rc = (lic.extra or {}).get("registered_capital") or (lic.extra or {}).get("注册资本")
+        try:
+            if rc:
+                values["registered_capital"] = float(str(rc).replace("万", "").replace("元", ""))
+        except (ValueError, TypeError):
+            pass
+    return values
+
+
+async def llm_fallback_clause(llm, text: str) -> Optional[dict]:
+    """⑤LLM 兜底: 规则判不了的模糊条款 → 三分类+理由。失败返回 None(转人审)。"""
+    if llm is None:
+        return None
+    prompt = f"""你是投标资格审查助手。判断该资格条件投标方是否满足, 只输出 JSON:
+{{"verdict": "matched|failed|needs_review", "reason": "一句话理由"}}
+
+条款: {text[:500]}"""
+    try:
+        data = await llm.collect_json(
+            messages=[{"role": "user", "content": prompt}], temperature=0.1)
+        if isinstance(data, dict) and data.get("verdict") in ("matched", "failed", "needs_review"):
+            return {"verdict": data["verdict"], "reason": data.get("reason", "")}
+    except Exception:
+        pass
+    return None

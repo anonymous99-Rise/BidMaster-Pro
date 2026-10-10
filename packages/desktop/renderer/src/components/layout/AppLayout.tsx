@@ -52,7 +52,7 @@ export default function AppLayout() {
           borderTop: '1px solid var(--color-border)',
           background: 'var(--color-surface)',
         }}>
-          © 2026 某科技企业
+          © 2026 智能招投标平台
         </footer>
       </div>
     </div>

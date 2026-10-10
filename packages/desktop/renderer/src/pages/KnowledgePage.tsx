@@ -4,11 +4,15 @@ import {
   AlertTriangle, Award, Users, Briefcase, Wallet, ShieldCheck, LayoutDashboard,
   FolderOpen, CheckCircle, Database, RefreshCw, RotateCcw, File as FileIcon,
   Share2, ZoomIn, ZoomOut, Maximize2, Globe, ArrowRight, ArrowLeft,
+  Filter, Calculator, FileDown,
 } from 'lucide-react';
+import apiClient from '../services/api';
 import {
   kbApi, type KbCompany, type KbCard, type KbReviewItem, type KbCertType,
   type KbExpiryAlert, type KbBuildTaskInfo, type KbFileInfo, type KbCategory,
   type KbGraph, type KbGraphNode, type KbCollectTaskInfo, type KbOpportunity,
+  type KbScreenSummary, type KbScreenItem, type KbRedline, type KbResponseRow,
+  type KbTeamResult, type KbPerformanceResult, type KbScoringSummary,
 } from '../services/api';
 
 type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'collect' | 'cert-dict' | 'files' | 'opportunities';
@@ -173,7 +177,7 @@ function Overview({ company, statCards }: {
           <div>
             <div style={{ fontSize: 17, fontWeight: 700 }}>{company.name}</div>
             <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>
-              {company.is_default && '默认空间'} · 公司 = 租户 = 知识空间
+              工作 = 租户 = 知识空间
             </div>
           </div>
         </div>
@@ -639,6 +643,89 @@ export default function KnowledgePage() {
     } catch (e) { notify('error', `加入商机失败: ${errMsg(e)}`); }
   };
 
+  // 初筛 (KB-M6): 对选中商机跑资格勾对
+  const [screeningTarget, setScreeningTarget] = useState<KbOpportunity | null>(null);
+  const [screeningLoading, setScreeningLoading] = useState(false);
+  const [screenResult, setScreenResult] = useState<{
+    screening_id: string; overall: string; summary: KbScreenSummary;
+    items: KbScreenItem[]; redlines: KbRedline[]; response_table: KbResponseRow[];
+  } | null>(null);
+
+  const runScreeningForOpp = async (opp: KbOpportunity) => {
+    if (!cid) return;
+    setScreeningTarget(opp);
+    setScreeningLoading(true);
+    setScreenResult(null);
+    try {
+      // 条款来源: 标题+正文关键词生成的默认资格条款组 (用户可在解读页细化后重跑)
+      const text = `${opp.title} ${opp.owner_org || ''}`;
+      const requirements = [
+        { text: '具有独立承担民事责任能力的法人 (营业执照)' },
+        { text: '具有良好的商业信誉和健全的财务会计制度' },
+        { text: '具有履行合同所必需的设备和专业技术能力' },
+        { text: '有依法缴纳税收和社会保障资金的良好记录' },
+        { text: '参加政府采购活动前三年内, 在经营活动中没有重大违法记录' },
+        { text: '信用中国网站未被列入失信被执行人名单' },
+      ];
+      const { data } = await kbApi.runScreening(cid, {
+        requirements, opportunity_id: opp.id, use_llm_fallback: false,
+        interpret_json: { qualification_table: { sections: [{ id: 'B1', title: '资格条件', rows: [[text]] }] } },
+      });
+      setScreenResult(data);
+      notify('success', `初筛完成: ${data.summary.matched}符合 / ${data.summary.failed}不符 / ${data.summary.needs_review}待审`);
+    } catch (e) { notify('error', `初筛失败: ${errMsg(e)}`); }
+    finally { setScreeningLoading(false); }
+  };
+
+  const correctVerdict = async (item: KbScreenItem, verdict: 'matched' | 'failed') => {
+    if (!screenResult || !cid) return;
+    try {
+      await kbApi.correctScreening(screenResult.screening_id, {
+        clause_text: item.text, original_verdict: item.verdict, corrected_verdict: verdict,
+        reason: '人工改判',
+      });
+      notify('success', '改判已回流, 后续同条款直接沿用');
+      setScreenResult((prev) => prev ? {
+        ...prev,
+        items: prev.items.map((it) => it === item ? { ...it, verdict, source: 'correction' } : it),
+      } : prev);
+    } catch (e) { notify('error', `改判失败: ${errMsg(e)}`); }
+  };
+
+  const downloadDoc = async (path: string, filename: string) => {
+    try {
+      const resp = await apiClient.get(path, { responseType: 'blob' });
+      const url = URL.createObjectURL(resp.data as Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { notify('error', `下载失败: ${errMsg(e)}`); }
+  };
+
+  // 深度分析 (KB-M7): 团队优化器 + 业绩算分
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<{
+    report_id: string; team: KbTeamResult; performance: KbPerformanceResult;
+    scoring_summary: KbScoringSummary;
+  } | null>(null);
+
+  const runAnalysisForCompany = async () => {
+    if (!cid) return;
+    setAnalysisLoading(true);
+    try {
+      const { data } = await kbApi.runAnalysis(cid, {
+        opportunity_id: screeningTarget?.id || undefined,
+        similar_keywords: ['信息系统', '软件', '数据', '平台'],
+        performance_years: 3,
+      });
+      setAnalysisResult(data);
+      notify('success', `分析完成: 团队 ${data.scoring_summary.team_score} + 业绩 ${data.scoring_summary.performance_score} = ${data.scoring_summary.total} 分, ${data.scoring_summary.suggestion}`);
+    } catch (e) { notify('error', `深度分析失败: ${errMsg(e)}`); }
+    finally { setAnalysisLoading(false); }
+  };
+
   const loadFiles = useCallback(async (companyId?: string) => {
     const id = companyId ?? activeCompany?.id;
     if (!id) return;
@@ -705,12 +792,12 @@ export default function KnowledgePage() {
       setActiveCompany(data);
       setShowCompany(false);
       setNc({ name: '', short_name: '', unified_social_code: '', legal_person: '', industry_code: '', region: '', contact: '', description: '' });
-      notify('success', '公司空间已创建');
+      notify('success', '工作空间已创建');
     } catch (e) { notify('error', errMsg(e)); }
   };
 
   const deleteCompany = async (c: KbCompany) => {
-    if (!window.confirm(`删除公司空间「${c.name}」及其全部知识数据?`)) return;
+    if (!window.confirm(`删除工作空间「${c.name}」及其全部知识数据?`)) return;
     try {
       await kbApi.deleteCompany(c.id);
       const rest = companies.filter((x) => x.id !== c.id);
@@ -787,7 +874,7 @@ export default function KnowledgePage() {
 
   // 概览统计卡: 当前公司维度 (队列保持全局, 文件按当前公司)
   const statCards = [
-    { label: '公司空间', value: String(companies.length), icon: Building2, color: '#3b82f6' },
+    { label: '工作空间', value: String(companies.length), icon: Building2, color: '#3b82f6' },
     { label: '来源文件', value: String(files.length), icon: FolderOpen, color: '#475569' },
     { label: '待审核卡片', value: String(reviewItems.length), icon: CheckCircle, color: '#d97706' },
     { label: '临期/过期', value: String(alerts.length), icon: AlertTriangle, color: '#dc2626' },
@@ -837,7 +924,7 @@ export default function KnowledgePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Building2 size={20} color="#1a56db" />
           <h2 style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', margin: 0 }}>知识库</h2>
-          <span style={{ fontSize: 11, color: '#94a3b8' }}>公司空间 · 子库 · 人审入池 · 到期提醒</span>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>工作空间 · 子库 · 人审入池 · 到期提醒</span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button style={btnPrimary} onClick={() => setShowCompany(true)} disabled={uploading}>
@@ -857,10 +944,10 @@ export default function KnowledgePage() {
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
         {/* ===== 左栏: 公司树 ===== */}
         <div style={{ width: 248, borderRight: '1px solid #e2e8f0', background: '#fff', overflowY: 'auto', padding: '12px 8px', flexShrink: 0 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.08em', padding: '0 10px 8px' }}>公司空间</div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8', letterSpacing: '0.08em', padding: '0 10px 8px' }}>工作空间</div>
           {companies.length === 0 && !loading && (
             <div style={{ textAlign: 'center', padding: '28px 12px', color: '#94a3b8', fontSize: 12, lineHeight: 1.6 }}>
-              还没有公司空间
+              还没有工作空间
               <br />点击「新建公司」开始
             </div>
           )}
@@ -875,18 +962,16 @@ export default function KnowledgePage() {
                 border: cid === c.id ? '1px solid #bfdbfe' : '1px solid transparent',
               }}
             >
-              {c.is_default ? <ShieldCheck size={15} color="#1a56db" /> : <Building2 size={15} color="#64748b" />}
+              <Building2 size={15} color={cid === c.id ? '#1a56db' : '#64748b'} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: cid === c.id ? '#1a56db' : '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</div>
-                <div style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.region || c.short_name || (c.is_default ? '默认空间' : '—')}</div>
+                <div style={{ fontSize: 10, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.region || c.short_name || '—'}</div>
               </div>
-              {!c.is_default && (
-                <button
-                  title="删除公司空间"
-                  onClick={(e) => { e.stopPropagation(); deleteCompany(c); }}
-                  style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 2 }}
-                ><Trash2 size={13} /></button>
-              )}
+              <button
+                title="删除工作空间"
+                onClick={(e) => { e.stopPropagation(); deleteCompany(c); }}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 2 }}
+              ><Trash2 size={13} /></button>
             </div>
           ))}
         </div>
@@ -927,7 +1012,7 @@ export default function KnowledgePage() {
             {!cid && !loading && (
               <div style={{ textAlign: 'center', padding: '60px 0', color: '#94a3b8' }}>
                 <Building2 size={36} style={{ marginBottom: 12, opacity: 0.4 }} />
-                <div>请先创建公司空间</div>
+                <div>请先创建工作空间</div>
               </div>
             )}
 
@@ -1076,6 +1161,11 @@ export default function KnowledgePage() {
                             <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, background: '#eff6ff', color: '#1a56db', fontWeight: 600 }}>
                               {o.score_total.toFixed(1)}分
                             </span>
+                            <button style={{ ...btnGhost, fontSize: 11, padding: '4px 8px', color: '#0d9488' }}
+                              title="资格条件逐条勾对"
+                              onClick={() => runScreeningForOpp(o)}>
+                              <Filter size={12} /> 初筛
+                            </button>
                             {oppStage !== 'tender' && nextStageOf(oppStage) && (
                               <button style={{ ...btnGhost, fontSize: 11, padding: '4px 8px' }}
                                 onClick={() => moveStage(o, nextStageOf(oppStage)!)}>
@@ -1096,6 +1186,114 @@ export default function KnowledgePage() {
                 )}
 
                 <div style={{ marginTop: 22, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+                  {/* ── 初筛结果面板 (KB-M6) ── */}
+                  {screeningLoading && (
+                    <div style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>
+                      <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> 正在初筛「{screeningTarget?.title.slice(0, 30)}」…
+                    </div>
+                  )}
+                  {screenResult && !screeningLoading && (
+                    <div style={{ marginBottom: 18 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                          初筛结果 · {screeningTarget?.title.slice(0, 40)}
+                        </div>
+                        <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 5, fontWeight: 700,
+                          background: screenResult.overall === 'passed' ? '#ecfdf5' : screenResult.overall === 'failed' ? '#fef2f2' : '#fffbeb',
+                          color: screenResult.overall === 'passed' ? '#059669' : screenResult.overall === 'failed' ? '#dc2626' : '#d97706' }}>
+                          {screenResult.overall === 'passed' ? '资格符合' : screenResult.overall === 'failed' ? '资格不符' : '需人工复核'}
+                        </span>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadResponseTable(screenResult!.screening_id), '商务要求响应表.docx')}>
+                          <FileDown size={11} /> 响应表
+                        </button>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadCommitmentLetter(cid!, screenResult!.screening_id), '资格承诺函.docx')}>
+                          <FileDown size={11} /> 承诺函
+                        </button>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadSmeDeclaration(cid!), '中小企业声明函.docx')}>
+                          <FileDown size={11} /> 声明函
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
+                        {screenResult.items.map((it, idx) => (
+                          <div key={idx} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', padding: '8px 10px', display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <div style={{ fontSize: 12, color: '#0f172a' }}>{it.text}</div>
+                              <div style={{ fontSize: 10, color: '#94a3b8' }}>
+                                {it.route === 'numeric' ? '数值规则' : it.route === 'skip' ? '声明承诺→文函' : '资质勾对'}
+                                {it.reason ? ` · ${it.reason}` : ''}{it.card?.name ? ` · 证据: ${it.card.name}` : ''}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 4, flexShrink: 0, alignItems: 'center' }}>
+                              <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, fontWeight: 600,
+                                background: it.verdict === 'matched' ? '#ecfdf5' : it.verdict === 'failed' ? '#fef2f2' : '#fffbeb',
+                                color: it.verdict === 'matched' ? '#059669' : it.verdict === 'failed' ? '#dc2626' : '#d97706' }}>
+                                {it.verdict === 'matched' ? '✓ 符合' : it.verdict === 'failed' ? '✗ 不符' : '? 待审'}
+                              </span>
+                              {it.verdict === 'needs_review' && (
+                                <>
+                                  <button style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#059669' }}
+                                    onClick={() => correctVerdict(it, 'matched')}>判符合</button>
+                                  <button style={{ ...btnGhost, fontSize: 10, padding: '2px 6px', color: '#dc2626' }}
+                                    onClick={() => correctVerdict(it, 'failed')}>判不符</button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {screenResult.redlines.length > 0 && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#dc2626', marginBottom: 4 }}>废标红线 ({screenResult.redlines.length})</div>
+                          {screenResult.redlines.map((rl, i) => (
+                            <div key={i} style={{ fontSize: 11, color: '#7f1d1d', background: '#fef2f2', borderRadius: 6, padding: '5px 8px', marginBottom: 4 }}>
+                              [{rl.section}] {rl.clause}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── 深度分析 (KB-M7) ── */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>深度分析 · 团队优化器 + 业绩算分</div>
+                    <button style={{ ...btnGhost, fontSize: 11, padding: '4px 10px', color: '#7c3aed' }}
+                      disabled={analysisLoading}
+                      onClick={runAnalysisForCompany}>
+                      {analysisLoading ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Calculator size={12} />} 分析
+                    </button>
+                  </div>
+                  {analysisResult && !analysisLoading && (
+                    <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fafbff', padding: '12px 14px', marginBottom: 14 }}>
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 8 }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: '#7c3aed' }}>
+                          {analysisResult.scoring_summary.total}
+                          <span style={{ fontSize: 11, fontWeight: 400, color: '#94a3b8' }}> / 20 分</span>
+                        </div>
+                        <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, fontWeight: 700, alignSelf: 'center',
+                          background: analysisResult.scoring_summary.suggestion === '建议投' ? '#ecfdf5' : analysisResult.scoring_summary.suggestion === '放弃' ? '#fef2f2' : '#fffbeb',
+                          color: analysisResult.scoring_summary.suggestion === '建议投' ? '#059669' : analysisResult.scoring_summary.suggestion === '放弃' ? '#dc2626' : '#d97706' }}>
+                          {analysisResult.scoring_summary.suggestion}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#334155', display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
+                        <span>团队 {analysisResult.scoring_summary.team_score}/{analysisResult.team.cap}</span>
+                        <span>业绩 {analysisResult.scoring_summary.performance_score}/{analysisResult.performance.cap}</span>
+                        <span>负责人: {analysisResult.team.roster.project_lead?.name || '—'}</span>
+                        <span>技术负责人: {analysisResult.team.roster.tech_lead?.name || '—'}</span>
+                        <span>成员 {analysisResult.team.roster.members.length} 人</span>
+                      </div>
+                      {analysisResult.scoring_summary.gaps.length > 0 && (
+                        <div style={{ fontSize: 11, color: '#92400e' }}>
+                          补强建议: {analysisResult.scoring_summary.gaps.join('; ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
                     资讯热点 · 加入商机
                   </div>
@@ -1316,7 +1514,7 @@ export default function KnowledgePage() {
                 </div>
 
                 {!cid ? (
-                  <div style={{ textAlign: 'center', padding: 30, color: '#94a3b8' }}>请选择公司空间</div>
+                  <div style={{ textAlign: 'center', padding: 30, color: '#94a3b8' }}>请选择工作空间</div>
                 ) : filesTab === 'files' ? (
                   <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', overflow: 'hidden' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -1404,7 +1602,7 @@ export default function KnowledgePage() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: 20 }}>
           <div style={{ background: '#fff', borderRadius: 14, width: 440, maxWidth: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
             <div style={{ padding: '16px 20px', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>新建公司空间</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>新建工作空间</div>
               <button onClick={() => setShowCompany(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}><X size={18} /></button>
             </div>
             <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
