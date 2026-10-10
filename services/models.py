@@ -780,6 +780,9 @@ class KbAnalysisReport(Base):
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbCollectTask(Base):
     """公开采集任务 (W2 流水线一次运行的记录)。
 
     按企业名搜索已接公告源 → 解析中标/未中标记录 → 去重 → 预填业绩人审队列。
