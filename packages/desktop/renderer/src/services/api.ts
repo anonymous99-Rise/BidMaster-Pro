@@ -799,6 +799,29 @@ export interface KbFileInfo {
   created_at: string | null;
 }
 
+export interface KbGraphNode {
+  id: string;
+  type: KbCategory | 'personnel_certificate';
+  label: string;
+  sub: string;
+  audited: boolean;
+  status: string;
+}
+
+export interface KbGraphEdge {
+  id: string;
+  src: string;
+  dst: string;
+  edge_type: string;
+  audited: boolean;
+}
+
+export interface KbGraph {
+  nodes: KbGraphNode[];
+  edges: KbGraphEdge[];
+  stats: Record<string, number>;
+}
+
 export const kbApi = {
   listCompanies: () => api.get<{ companies: KbCompany[] }>('/kb/companies'),
   createCompany: (data: Partial<KbCompany>) => api.post<KbCompany>('/kb/companies', data),
@@ -853,6 +876,9 @@ export const kbApi = {
   listFiles: (companyId: string, parseStatus?: string) =>
     api.get<{ files: KbFileInfo[] }>(`/kb/companies/${companyId}/files`,
       { params: parseStatus ? { parse_status: parseStatus } : {} }),
+
+  graph: (companyId: string, audit: 'all' | 'audited' = 'all') =>
+    api.get<KbGraph>(`/kb/companies/${companyId}/graph`, { params: { audit } }),
 };
 
 export const knowledgeApi = {

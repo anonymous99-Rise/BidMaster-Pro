@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Building2, Plus, Trash2, UploadCloud, FolderArchive, Search, Loader2, Check, X,
   AlertTriangle, Award, Users, Briefcase, Wallet, ShieldCheck, LayoutDashboard,
   FolderOpen, CheckCircle, Database, RefreshCw, RotateCcw, File as FileIcon,
+  Share2, ZoomIn, ZoomOut, Maximize2,
 } from 'lucide-react';
 import {
   kbApi, type KbCompany, type KbCard, type KbReviewItem, type KbCertType,
   type KbExpiryAlert, type KbBuildTaskInfo, type KbFileInfo, type KbCategory,
+  type KbGraph, type KbGraphNode,
 } from '../services/api';
 
-type KbTab = 'overview' | 'sub-libraries' | 'review' | 'alerts' | 'cert-dict' | 'files';
+type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'cert-dict' | 'files';
 
 const SUBS: Array<{ key: KbCategory; label: string; desc: string; icon: typeof Award; color: string }> = [
   { key: 'certificate', label: '资质证书', desc: '企业资质/体系/许可证', icon: Award, color: '#3b82f6' },
@@ -207,6 +209,243 @@ function Overview({ company, statCards }: {
   );
 }
 
+// ============ 图谱视图 ============
+const NODE_COLORS: Record<string, string> = {
+  certificate: '#3b82f6', personnel: '#059669', achievement: '#d97706',
+  financial: '#7c3aed', credit: '#0d9488', personnel_certificate: '#10b981',
+};
+const GRAPH_GROUPS: KbCategory[] = ['certificate', 'personnel', 'achievement', 'financial', 'credit'];
+const groupOf = (t: string): KbCategory | null =>
+  t === 'personnel_certificate' ? 'personnel' : (GRAPH_GROUPS.includes(t as KbCategory) ? (t as KbCategory) : null);
+const clipLabel = (s: string, n = 9) => (s.length > n ? s.slice(0, n) + '…' : s);
+
+function GraphView({ company, graph, loading, auditOnly, onToggleAudit, onRefresh, onJump }: {
+  company: KbCompany; graph: KbGraph; loading: boolean;
+  auditOnly: boolean; onToggleAudit: (v: boolean) => void;
+  onRefresh: () => void; onJump: (cat: KbCategory, node: KbGraphNode) => void;
+}) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 900, h: 560 });
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [selected, setSelected] = useState<KbGraphNode | null>(null);
+  const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+
+  // 数据/公司/勾选变化后清空选中, 避免详情面板残留旧节点
+  useEffect(() => { setSelected(null); }, [graph, company.id]);
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+
+  const positions = useMemo(() => {
+    const { w, h } = size;
+    const cx = w / 2, cy = h / 2;
+    const pos = new Map<string, { x: number; y: number }>();
+    pos.set('company', { x: cx, y: cy });
+    const present = GRAPH_GROUPS.filter((g) => graph.nodes.some((n) => groupOf(n.type) === g));
+    const R = Math.min(w, h) * 0.33;
+    present.forEach((g, gi) => {
+      const a = -Math.PI / 2 + (gi * 2 * Math.PI) / Math.max(present.length, 1);
+      const gx = cx + R * Math.cos(a), gy = cy + R * Math.sin(a);
+      const items = graph.nodes.filter((n) => groupOf(n.type) === g);
+      const step = 32;
+      const y0 = gy - ((items.length - 1) * step) / 2;
+      items.forEach((n, i) => pos.set(n.id, { x: gx, y: y0 + i * step }));
+    });
+    return pos;
+  }, [graph.nodes, size]);
+
+  const onDown = (e: React.MouseEvent) => {
+    drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+  };
+  const onMove = (e: React.MouseEvent) => {
+    if (!drag.current) return;
+    setPan({ x: drag.current.px + (e.clientX - drag.current.x), y: drag.current.py + (e.clientY - drag.current.y) });
+  };
+  const onUp = () => { drag.current = null; };
+  const reset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  const companyLabel = company.short_name || company.name;
+  const present = GRAPH_GROUPS.filter((g) => graph.nodes.some((n) => groupOf(n.type) === g));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>公司资质全景图谱</div>
+          <div style={{ fontSize: 11, color: '#64748b' }}>节点=实体卡片(按子库着色)，连线=关系。点击节点查看详情并直达子库。</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#475569', cursor: 'pointer' }}>
+            <input type="checkbox" checked={auditOnly} onChange={(e) => onToggleAudit(e.target.checked)} /> 仅已入池
+          </label>
+          <button style={btnGhost} onClick={onRefresh}><RefreshCw size={14} /> 刷新</button>
+        </div>
+      </div>
+
+      <div ref={boxRef} style={{ position: 'relative', flex: 1, minHeight: 420, border: '1px solid #e2e8f0', borderRadius: 12, background: '#fbfdff', overflow: 'hidden' }}>
+        {loading && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.6)', zIndex: 5 }}>
+            <Loader2 size={22} color="#94a3b8" style={{ animation: 'spin 1s linear infinite' }} />
+          </div>
+        )}
+
+        {graph.nodes.length === 0 && !loading && (
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', gap: 8 }}>
+            <Share2 size={34} style={{ opacity: 0.4 }} />
+            <div style={{ fontSize: 12 }}>暂无实体卡片，先上传资料构建知识库</div>
+          </div>
+        )}
+
+        <svg
+          width="100%" height="100%"
+          style={{ cursor: drag.current ? 'grabbing' : 'grab' }}
+          onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+          onWheel={(e) => setZoom((z) => Math.min(2.5, Math.max(0.4, z + (e.deltaY < 0 ? 0.12 : -0.12))))}
+        >
+          <defs>
+            <marker id="kb-arrow" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6 Z" fill="#cbd5e1" />
+            </marker>
+          </defs>
+          <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+            {/* 边 */}
+            {graph.edges.map((e) => {
+              const s = positions.get(e.src), d = positions.get(e.dst);
+              if (!s || !d) return null;
+              const mx = (s.x + d.x) / 2, my = (s.y + d.y) / 2 - 18;
+              return (
+                <path key={e.id}
+                  d={`M${s.x},${s.y} Q${mx},${my} ${d.x},${d.y}`}
+                  fill="none" stroke="#cbd5e1" strokeWidth={1.4}
+                  strokeDasharray={e.audited ? undefined : '4 3'}
+                  markerEnd="url(#kb-arrow)" />
+              );
+            })}
+            {/* 公司→各子库 中心辐射 (连到分簇质心, 避免连线过密) */}
+            {present.map((g) => {
+              const c = positions.get('company');
+              const pts = graph.nodes.filter((n) => groupOf(n.type) === g)
+                .map((n) => positions.get(n.id)).filter(Boolean) as Array<{ x: number; y: number }>;
+              if (!c || !pts.length) return null;
+              const gx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+              const gy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+              return <line key={`sp-${g}`} x1={c.x} y1={c.y} x2={gx} y2={gy}
+                stroke="#e2e8f0" strokeWidth={1} />;
+            })}
+            {/* 公司节点 */}
+            {(() => {
+              if (graph.nodes.length === 0) return null;
+              const c = positions.get('company');
+              if (!c) return null;
+              return (
+                <g>
+                  <circle cx={c.x} cy={c.y} r={30} fill="#1a56db" stroke="#fff" strokeWidth={3} />
+                  <text x={c.x} y={c.y + 4} textAnchor="middle" fontSize={11} fontWeight={700} fill="#fff">
+                    {clipLabel(companyLabel, 6)}
+                  </text>
+                </g>
+              );
+            })()}
+            {/* 子库分组标签 */}
+            {present.map((g) => {
+              const items = graph.nodes.filter((n) => groupOf(n.type) === g);
+              const p = positions.get(items[0]?.id ?? '');
+              if (!p) return null;
+              const topY = Math.min(...items.map((n) => positions.get(n.id)?.y ?? p.y));
+              return (
+                <text key={`gl-${g}`} x={p.x} y={topY - 22} textAnchor="middle" fontSize={11} fontWeight={700} fill={NODE_COLORS[g]}>
+                  {CATEGORY_LABELS[g]} ({items.length})
+                </text>
+              );
+            })}
+            {/* 卡片节点 */}
+            {graph.nodes.map((n) => {
+              const p = positions.get(n.id);
+              if (!p) return null;
+              const color = NODE_COLORS[n.type] || '#64748b';
+              const isSel = selected?.id === n.id;
+              return (
+                <g key={n.id} style={{ cursor: 'pointer' }}
+                  onClick={(e) => { e.stopPropagation(); setSelected(n); }}>
+                  <circle cx={p.x} cy={p.y} r={isSel ? 12 : 9} fill={color}
+                    stroke={isSel ? '#0f172a' : (n.audited ? '#fff' : '#f59e0b')}
+                    strokeWidth={isSel ? 2.5 : 1.6}
+                    strokeDasharray={n.audited ? undefined : '3 2'} />
+                  <text x={p.x} y={p.y + 22} textAnchor="middle" fontSize={10} fill="#475569">
+                    {clipLabel(n.label)}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+
+        {/* 工具栏 */}
+        <div style={{ position: 'absolute', right: 12, bottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button title="放大" style={{ ...btnGhost, padding: 6 }} onClick={() => setZoom((z) => Math.min(2.5, z + 0.15))}><ZoomIn size={15} /></button>
+          <button title="缩小" style={{ ...btnGhost, padding: 6 }} onClick={() => setZoom((z) => Math.max(0.4, z - 0.15))}><ZoomOut size={15} /></button>
+          <button title="复位" style={{ ...btnGhost, padding: 6 }} onClick={reset}><Maximize2 size={15} /></button>
+        </div>
+
+        {/* 图例 */}
+        {graph.nodes.length > 0 && (
+        <div style={{ position: 'absolute', left: 12, bottom: 12, background: 'rgba(255,255,255,0.92)', border: '1px solid #e2e8f0', borderRadius: 9, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {present.map((g) => (
+            <div key={g} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#475569' }}>
+              <span style={{ width: 10, height: 10, borderRadius: 5, background: NODE_COLORS[g], display: 'inline-block' }} />
+              {CATEGORY_LABELS[g]} · {graph.stats[g] ?? 0}
+            </div>
+          ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 5, border: '1.5px dashed #f59e0b', display: 'inline-block' }} /> 待审核
+          </div>
+        </div>
+        )}
+
+        {/* 节点详情 */}
+        {selected && (
+          <div style={{ position: 'absolute', top: 12, right: 12, width: 240, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, boxShadow: '0 8px 24px rgba(15,23,42,0.12)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 12px', borderBottom: '1px solid #f1f5f9' }}>
+              <span style={{ width: 10, height: 10, borderRadius: 5, background: NODE_COLORS[selected.type] || '#64748b' }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#334155' }}>
+                {CATEGORY_LABELS[groupOf(selected.type) || ''] || (selected.type === 'personnel_certificate' ? '人员证书' : selected.type)}
+              </span>
+              <button onClick={() => setSelected(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}><X size={14} /></button>
+            </div>
+            <div style={{ padding: '10px 12px' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>{selected.label}</div>
+              {selected.sub && <div style={{ fontSize: 11, color: '#64748b', marginTop: 3 }}>{selected.sub}</div>}
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, fontWeight: 600, background: selected.audited ? '#ecfdf5' : '#fffbeb', color: selected.audited ? '#059669' : '#b45309' }}>
+                  {selected.audited ? '已入池' : '待审核'}
+                </span>
+                {selected.status && STATUS_BADGE[selected.status] && (
+                  <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, fontWeight: 600, background: STATUS_BADGE[selected.status].bg, color: STATUS_BADGE[selected.status].color }}>
+                    {STATUS_BADGE[selected.status].text}
+                  </span>
+                )}
+              </div>
+              {groupOf(selected.type) && (
+                <button style={{ ...btnPrimary, width: '100%', justifyContent: 'center', marginTop: 10 }}
+                  onClick={() => onJump(groupOf(selected.type) as KbCategory, selected)}>
+                  <FolderOpen size={13} /> 在子库中查看
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============ 主页面 ============
 export default function KnowledgePage() {
   const [companies, setCompanies] = useState<KbCompany[]>([]);
@@ -230,6 +469,9 @@ export default function KnowledgePage() {
 
   const [reviewItems, setReviewItems] = useState<KbReviewItem[]>([]);
   const [alerts, setAlerts] = useState<KbExpiryAlert[]>([]);
+  const [graph, setGraph] = useState<KbGraph>({ nodes: [], edges: [], stats: {} });
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphAudit, setGraphAudit] = useState(false);
   const [certTypes, setCertTypes] = useState<KbCertType[]>([]);
   const [tasks, setTasks] = useState<KbBuildTaskInfo[]>([]);
   const [files, setFiles] = useState<KbFileInfo[]>([]);
@@ -317,6 +559,17 @@ export default function KnowledgePage() {
     } catch (e) { notify('error', `加载文件失败: ${errMsg(e)}`); }
   }, [activeCompany, notify]);
 
+  const loadGraph = useCallback(async (companyId?: string, audit = graphAudit, silent = false) => {
+    const id = companyId ?? activeCompany?.id;
+    if (!id) return;
+    if (!silent) setGraphLoading(true);
+    try {
+      const { data } = await kbApi.graph(id, audit ? 'audited' : 'all');
+      setGraph(data);
+    } catch (e) { notify('error', `加载图谱失败: ${errMsg(e)}`); }
+    finally { if (!silent) setGraphLoading(false); }
+  }, [activeCompany, graphAudit, notify]);
+
   useEffect(() => { loadCompanies(); }, [loadCompanies]);
   // 卡片: 公司/子库/审核状态/证书状态 变更自动重载; 搜索 q 由 Enter 手动触发
   useEffect(() => { if (cid) loadCards(cid); }, [cid, subKey, cardsFilter.audit, cardsFilter.status]);
@@ -325,6 +578,24 @@ export default function KnowledgePage() {
     loadReview(cid); loadAlerts(cid); loadFiles(cid); loadTasks(cid);
   }, [cid, loadReview, loadAlerts, loadFiles, loadTasks]);
   useEffect(() => { if (tab === 'cert-dict') loadCertTypes(); }, [tab, loadCertTypes]);
+  useEffect(() => { if (cid && tab === 'graph') loadGraph(cid); }, [cid, tab, graphAudit, loadGraph]);
+
+  // 图谱节点直达子库: 切到子库页签并按标签搜索定位该卡片
+  const jumpToSub = async (cat: KbCategory, node: KbGraphNode) => {
+    // 人员证书是人员子库下的叶子, 其标签不在人员卡片可搜字段中, 故只定位到子库不搜索
+    const q = node.type === 'personnel_certificate' ? '' : node.label;
+    setSubKey(cat);
+    setCardsFilter({ audit: 'all', status: '', q });
+    setTab('sub-libraries');
+    if (!cid) return;
+    setCardsLoading(true);
+    try {
+      const { data } = await kbApi.listCards(cid, { category: cat, audit: 'all', q: q || undefined, limit: 300 });
+      setCards(data.cards);
+      setCardsTotal(data.total);
+    } catch (e) { notify('error', errMsg(e)); }
+    finally { setCardsLoading(false); }
+  };
 
   const createCompany = async () => {
     if (!nc.name.trim()) { notify('error', '公司名称必填'); return; }
@@ -525,6 +796,7 @@ export default function KnowledgePage() {
           <div style={{ display: 'flex', gap: 2, padding: '0 20px', borderBottom: '1px solid #e2e8f0', background: '#fff', overflowX: 'auto' }}>
             {([
               { key: 'overview', label: '概览', icon: LayoutDashboard },
+              { key: 'graph', label: '图谱', icon: Share2 },
               { key: 'sub-libraries', label: '子库', icon: FolderOpen },
               { key: 'review', label: '人审队列', icon: CheckCircle, badge: reviewItems.length },
               { key: 'alerts', label: '到期提醒', icon: AlertTriangle, badge: alerts.length },
@@ -558,6 +830,18 @@ export default function KnowledgePage() {
             )}
 
             {cid && tab === 'overview' && <Overview company={activeCompany!} statCards={statCards} />}
+
+            {cid && tab === 'graph' && (
+              <GraphView
+                company={activeCompany!}
+                graph={graph}
+                loading={graphLoading}
+                auditOnly={graphAudit}
+                onToggleAudit={setGraphAudit}
+                onRefresh={() => loadGraph(cid)}
+                onJump={jumpToSub}
+              />
+            )}
 
             {cid && tab === 'sub-libraries' && (
               <div>

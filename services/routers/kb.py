@@ -277,6 +277,84 @@ async def list_cards(
     }
 
 
+# ================= 图谱视图 =================
+
+def _graph_label(cat: str, r) -> tuple[str, str]:
+    """卡片 → (主标签, 副标签), 用于图谱节点显示。"""
+    if cat == "certificate":
+        return (r.name or "证书", " · ".join(x for x in [r.number, r.level] if x))
+    if cat == "personnel":
+        return (r.name or "人员", " · ".join(x for x in [r.title, r.role] if x))
+    if cat == "achievement":
+        return (r.project_name or "业绩", r.client_name or "")
+    if cat == "financial":
+        return (f"{r.year} 财务报表" if r.year else (r.report_type or "财务"), r.report_type or "")
+    if cat == "credit":
+        return (r.title or r.credit_type or "信用", r.check_date or "")
+    return ("卡片", "")
+
+
+@router.get("/companies/{company_id}/graph")
+async def get_graph(
+    company_id: str,
+    audit: str = "all",          # all/audited
+    db: AsyncSession = Depends(get_db),
+):
+    """公司资质全景图谱: 节点=实体卡片(按子库), 边=关系(kb_edges)。"""
+    await _get_company(company_id, db)
+
+    def _nid(t: str, i: str) -> str:
+        return f"{t}:{i}"
+
+    nodes: list[dict] = []
+    node_ids: set[str] = set()
+
+    # 5 子库主卡片
+    for cat, model in _CARD_MODELS.items():
+        stmt = select(model).where(model.company_id == company_id)
+        if audit == "audited":
+            stmt = stmt.where(model.is_audited == True)  # noqa: E712
+        for r in (await db.execute(stmt)).scalars().all():
+            label, sub = _graph_label(cat, r)
+            nid = _nid(cat, str(r.id))
+            nodes.append({
+                "id": nid, "type": cat, "label": label, "sub": sub,
+                "audited": bool(r.is_audited),
+                "status": getattr(r, "status", "") or "",
+            })
+            node_ids.add(nid)
+
+    # 人员证书 (人员簇叶子节点, 供 holds 边落点)
+    pcert_stmt = select(KbPersonnelCertificate).where(
+        KbPersonnelCertificate.company_id == company_id)
+    if audit == "audited":
+        pcert_stmt = pcert_stmt.where(KbPersonnelCertificate.is_audited == True)  # noqa: E712
+    for r in (await db.execute(pcert_stmt)).scalars().all():
+        nid = _nid("personnel_certificate", str(r.id))
+        nodes.append({
+            "id": nid, "type": "personnel_certificate",
+            "label": r.cert_type or "人员证书", "sub": r.cert_no or "",
+            "audited": bool(r.is_audited), "status": r.status or "",
+        })
+        node_ids.add(nid)
+
+    # 关系边 (仅两端节点都可见时)
+    edges = []
+    for e in (await db.execute(
+        select(KbEdge).where(KbEdge.company_id == company_id)
+    )).scalars().all():
+        s, d = _nid(e.src_type, str(e.src_id)), _nid(e.dst_type, str(e.dst_id))
+        if s in node_ids and d in node_ids:
+            edges.append({
+                "id": str(e.id), "src": s, "dst": d,
+                "edge_type": e.edge_type, "audited": bool(e.is_audited),
+            })
+
+    stats = {cat: sum(1 for n in nodes if n["type"] == cat) for cat in _CARD_MODELS}
+    stats["personnel_certificate"] = sum(1 for n in nodes if n["type"] == "personnel_certificate")
+    return {"nodes": nodes, "edges": edges, "stats": stats}
+
+
 # ================= 上传 + 构建任务 =================
 
 @router.post("/companies/{company_id}/upload")
