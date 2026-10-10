@@ -14,7 +14,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,7 @@ from services.models import (
     KbFinancial,
     KbPersonnel,
     KbPersonnelCertificate,
+    HotspotItem,
 )
 
 logger = logging.getLogger(__name__)
@@ -825,3 +826,132 @@ async def retry_collect_task(task_id: str, db: AsyncSession = Depends(get_db)):
         await db.commit()
         raise HTTPException(status_code=500, detail=f"投递失败: {e}")
     return {"success": True, "task_id": task_id}
+
+
+# ================= 商机分析 (KB-M4) =================
+
+class OpportunityStageUpdate(BaseModel):
+    stage: str  # candidate / analysis / tender
+
+
+@router.get("/companies/{company_id}/opportunities")
+async def list_opportunities(
+    company_id: str,
+    stage: str = Query("", description="阶段: 空=全部, candidate/analysis/tender"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """商机分析: 按阶段列出该公司的备选库/分析库/投标库。"""
+    await _get_company(company_id, db)
+    conditions = [HotspotItem.company_id == company_id]
+    if stage:
+        conditions.append(HotspotItem.stage == stage)
+    where_clause = and_(*conditions)
+    total = (await db.execute(
+        select(func.count(HotspotItem.id)).where(where_clause)
+    )).scalar() or 0
+    q = (select(HotspotItem)
+         .where(where_clause)
+         .order_by(HotspotItem.score_total.desc(), HotspotItem.created_at.desc())
+         .limit(limit).offset(offset))
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "stage": stage,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_opportunity_dict(r) for r in rows],
+    }
+
+
+@router.post("/opportunities/{opportunity_id}/stage")
+async def update_opportunity_stage(
+    opportunity_id: str,
+    body: OpportunityStageUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """更新单个商机的阶段 (candidate → analysis → tender)。"""
+    if body.stage not in ("", "candidate", "analysis", "tender"):
+        raise HTTPException(status_code=400, detail="无效的阶段值")
+    row = (await db.execute(
+        select(HotspotItem).where(HotspotItem.id == opportunity_id)
+    )).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="商机不存在")
+    row.stage = body.stage
+    await db.commit()
+    return {"success": True, "id": opportunity_id, "stage": row.stage}
+
+
+@router.post("/companies/{company_id}/opportunities/from-hotspot")
+async def add_opportunity_from_hotspot(
+    company_id: str,
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """从资讯热点落库为该公司的备选商机 (stage=candidate)。
+
+    body: {hotspot_id: str, stage?: str}  —— 复制已聚合的 hotspot 到该公司名下。
+    """
+    await _get_company(company_id, db)
+    hotspot_id = (body or {}).get("hotspot_id", "")
+    target_stage = (body or {}).get("stage", "candidate")
+    if target_stage not in ("", "candidate", "analysis", "tender"):
+        raise HTTPException(status_code=400, detail="无效的阶段值")
+    src = (await db.execute(
+        select(HotspotItem).where(HotspotItem.id == hotspot_id)
+    )).scalar_one_or_none()
+    if not src:
+        raise HTTPException(status_code=404, detail="资讯热点不存在")
+    # 同一公司+同一指纹已存在则不重复落库
+    if src.fingerprint:
+        exist = (await db.execute(select(HotspotItem.id).where(
+            HotspotItem.company_id == company_id,
+            HotspotItem.fingerprint == src.fingerprint,
+        ))).first()
+        if exist:
+            return {"success": True, "id": str(exist[0]), "duplicated": True,
+                    "stage": target_stage}
+    new_row = HotspotItem(
+        id=str(uuid.uuid4()),
+        title=src.title, url=src.url, source=src.source, sources=src.sources,
+        pub_date=src.pub_date, content=src.content, source_code=src.source_code,
+        industry_code=src.industry_code, region=src.region, amount=src.amount,
+        bid_deadline=src.bid_deadline, owner_org=src.owner_org,
+        project_code=src.project_code, announce_type=src.announce_type,
+        fingerprint=src.fingerprint, extra=src.extra,
+        score_total=src.score_total, score_urgency=src.score_urgency,
+        score_match=src.score_match, score_amount=src.score_amount,
+        score_region=src.score_region, score_freshness=src.score_freshness,
+        is_hot=src.is_hot, is_converted=src.is_converted,
+        converted_project_id=src.converted_project_id,
+        stage=target_stage, company_id=company_id,
+    )
+    db.add(new_row)
+    await db.commit()
+    return {"success": True, "id": str(new_row.id), "duplicated": False,
+            "stage": target_stage}
+
+
+def _opportunity_dict(r: HotspotItem) -> dict:
+    return {
+        "id": str(r.id),
+        "title": r.title,
+        "url": r.url,
+        "source": r.source,
+        "sources": r.sources or [],
+        "pub_date": r.pub_date,
+        "industry_code": r.industry_code,
+        "region": r.region,
+        "amount": r.amount,
+        "bid_deadline": r.bid_deadline,
+        "owner_org": r.owner_org,
+        "project_code": r.project_code,
+        "announce_type": r.announce_type,
+        "score_total": r.score_total,
+        "is_hot": r.is_hot,
+        "stage": r.stage,
+        "company_id": r.company_id or "",
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }

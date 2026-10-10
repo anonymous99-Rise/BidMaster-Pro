@@ -3,15 +3,15 @@ import {
   Building2, Plus, Trash2, UploadCloud, FolderArchive, Search, Loader2, Check, X,
   AlertTriangle, Award, Users, Briefcase, Wallet, ShieldCheck, LayoutDashboard,
   FolderOpen, CheckCircle, Database, RefreshCw, RotateCcw, File as FileIcon,
-  Share2, ZoomIn, ZoomOut, Maximize2, Globe,
+  Share2, ZoomIn, ZoomOut, Maximize2, Globe, ArrowRight, ArrowLeft,
 } from 'lucide-react';
 import {
   kbApi, type KbCompany, type KbCard, type KbReviewItem, type KbCertType,
   type KbExpiryAlert, type KbBuildTaskInfo, type KbFileInfo, type KbCategory,
-  type KbGraph, type KbGraphNode, type KbCollectTaskInfo,
+  type KbGraph, type KbGraphNode, type KbCollectTaskInfo, type KbOpportunity,
 } from '../services/api';
 
-type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'collect' | 'cert-dict' | 'files';
+type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'collect' | 'cert-dict' | 'files' | 'opportunities';
 
 const SUBS: Array<{ key: KbCategory; label: string; desc: string; icon: typeof Award; color: string }> = [
   { key: 'certificate', label: '资质证书', desc: '企业资质/体系/许可证', icon: Award, color: '#3b82f6' },
@@ -25,6 +25,11 @@ const CATEGORY_LABELS: Record<string, string> = {
   certificate: '资质证书', personnel: '从业资源', achievement: '业绩库',
   financial: '财务库', credit: '信用库',
 };
+
+const STAGE_LABEL: Record<string, string> = {
+  candidate: '备选库', analysis: '分析库', tender: '投标库',
+};
+const STAGE_ORDER: Array<'candidate' | 'analysis' | 'tender'> = ['candidate', 'analysis', 'tender'];
 
 const STATUS_BADGE: Record<string, { text: string; color: string; bg: string }> = {
   valid: { text: '有效', color: '#059669', bg: '#ecfdf5' },
@@ -480,6 +485,14 @@ export default function KnowledgePage() {
   const [collectKeyword, setCollectKeyword] = useState('');
   const [collecting, setCollecting] = useState(false);
 
+  // 商机分析 (KB-M4)
+  const [oppStage, setOppStage] = useState<'candidate' | 'analysis' | 'tender'>('candidate');
+  const [opportunities, setOpportunities] = useState<KbOpportunity[]>([]);
+  const [opportunitiesTotal, setOpportunitiesTotal] = useState(0);
+  const [opportunitiesLoading, setOpportunitiesLoading] = useState(false);
+  const [allHotspots, setAllHotspots] = useState<KbOpportunity[]>([]);
+  const [allHotspotsLoading, setAllHotspotsLoading] = useState(false);
+
   const [showCert, setShowCert] = useState(false);
   const [nct, setNct] = useState({ code: '', name: '', category: 'enterprise', default_valid_months: 0, scope_hint: '' });
 
@@ -582,6 +595,50 @@ export default function KnowledgePage() {
     } catch (e) { notify('error', `重试失败: ${errMsg(e)}`); }
   };
 
+  const loadOpportunities = useCallback(async (companyId?: string, stage = oppStage, silent = false) => {
+    const id = companyId ?? cid;
+    if (!id) return;
+    if (!silent) setOpportunitiesLoading(true);
+    try {
+      const { data } = await kbApi.listOpportunities(id, stage || undefined);
+      setOpportunities(data.items);
+      setOpportunitiesTotal(data.total);
+    } catch (e) { notify('error', `加载商机失败: ${errMsg(e)}`); }
+    finally { if (!silent) setOpportunitiesLoading(false); }
+  }, [cid, oppStage, notify]);
+
+  const loadAllHotspots = useCallback(async (silent = false) => {
+    if (!silent) setAllHotspotsLoading(true);
+    try {
+      const { data } = await kbApi.listOpportunities('', '');
+      setAllHotspots(data.items);
+    } catch { /* 全局热点无需强提示 */ }
+    finally { if (!silent) setAllHotspotsLoading(false); }
+  }, []);
+
+  const nextStageOf = (s: 'candidate' | 'analysis' | 'tender') =>
+    STAGE_ORDER[STAGE_ORDER.indexOf(s) + 1] ?? null;
+  const prevStageOf = (s: 'candidate' | 'analysis' | 'tender') =>
+    STAGE_ORDER[STAGE_ORDER.indexOf(s) - 1] ?? null;
+
+  const moveStage = async (opp: KbOpportunity, next: 'candidate' | 'analysis' | 'tender') => {
+    try {
+      await kbApi.updateOpportunityStage(opp.id, next);
+      notify('success', `已移至${STAGE_LABEL[next]}`);
+      await loadOpportunities(cid, oppStage);
+    } catch (e) { notify('error', `阶段流转失败: ${errMsg(e)}`); }
+  };
+
+  const addFromHotspot = async (hotspotId: string, stage: 'candidate' | 'analysis' | 'tender') => {
+    if (!cid) return;
+    try {
+      const { data } = await kbApi.addOpportunityFromHotspot(cid, hotspotId, stage);
+      if (data.duplicated) notify('success', '该商机已存在，无需重复添加');
+      else notify('success', `已加入${STAGE_LABEL[stage]}`);
+      await loadOpportunities(cid, oppStage);
+    } catch (e) { notify('error', `加入商机失败: ${errMsg(e)}`); }
+  };
+
   const loadFiles = useCallback(async (companyId?: string) => {
     const id = companyId ?? activeCompany?.id;
     if (!id) return;
@@ -612,6 +669,9 @@ export default function KnowledgePage() {
   useEffect(() => { if (tab === 'cert-dict') loadCertTypes(); }, [tab, loadCertTypes]);
   useEffect(() => { if (cid && tab === 'graph') loadGraph(cid); }, [cid, tab, graphAudit, loadGraph]);
   useEffect(() => { if (cid && tab === 'collect') loadCollectTasks(cid); }, [cid, tab, loadCollectTasks]);
+  // 商机分析 (KB-M4): 进入页签即加载该公司商机 + 全局热点(供落库)
+  useEffect(() => { if (cid && tab === 'opportunities') { loadOpportunities(cid, oppStage); loadAllHotspots(); } },
+    [cid, tab, oppStage, loadOpportunities, loadAllHotspots]);
   // 有采集任务在排队/运行中时轮询刷新 (celery 异步完成)
   useEffect(() => {
     const active = collectTasks.some((t) => t.status === 'pending' || t.status === 'queued' || t.status === 'running');
@@ -843,6 +903,7 @@ export default function KnowledgePage() {
               { key: 'alerts', label: '到期提醒', icon: AlertTriangle, badge: alerts.length },
               { key: 'files', label: '文件与任务', icon: Database },
               { key: 'cert-dict', label: '证书字典', icon: ShieldCheck },
+              { key: 'opportunities', label: '商机分析', icon: Briefcase },
             ] as Array<{ key: KbTab; label: string; icon: typeof LayoutDashboard; badge?: number }>).map((t) => (
               <button
                 key={t.key}
@@ -953,6 +1014,114 @@ export default function KnowledgePage() {
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+            {cid && tab === 'opportunities' && (
+              <div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>商机分析 · 投标决策</div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    从聚合资讯中挑选项目加入备选库，沿 candidate → analysis → tender 推进，
+                    为初筛（KB-M6）与深度分析（KB-M7）提供输入。
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', padding: 3, borderRadius: 8 }}>
+                    {STAGE_ORDER.map((s) => (
+                      <button key={s} onClick={() => setOppStage(s)} style={{
+                        padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                        background: oppStage === s ? '#fff' : 'transparent',
+                        color: oppStage === s ? '#1a56db' : '#64748b',
+                        boxShadow: oppStage === s ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                      }}>
+                        {STAGE_LABEL[s]}
+                        <span style={{ marginLeft: 6, opacity: 0.7, fontWeight: 400 }}>
+                          {s === 'candidate' ? opportunitiesTotal : ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <button style={{ ...btnGhost }} onClick={() => loadOpportunities(cid, oppStage)}>
+                    <RefreshCw size={14} /> 刷新
+                  </button>
+                </div>
+
+                {opportunitiesLoading ? (
+                  <div style={{ padding: '30px 0', textAlign: 'center', color: '#94a3b8' }}>
+                    <Loader2 size={22} style={{ animation: 'spin 1s linear infinite', marginBottom: 8 }} /> 加载中…
+                  </div>
+                ) : opportunities.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '40px 0', color: '#94a3b8' }}>
+                    <Briefcase size={36} style={{ marginBottom: 10, opacity: 0.4 }} />
+                    <div>该阶段暂无商机</div>
+                    <div style={{ fontSize: 11, marginTop: 4 }}>从下方「资讯热点」中挑选项目加入本阶段</div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {opportunities.map((o) => (
+                      <div key={o.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: '12px 14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, justifyContent: 'space-between' }}>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{o.title}</div>
+                            <div style={{ fontSize: 11, color: '#64748b', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                              <span>{o.owner_org || '—'}</span>
+                              <span>金额 {o.amount ? fmtAmount(o.amount) : '—'}</span>
+                              <span>截止 {o.bid_deadline || '—'}</span>
+                              <span style={{ color: '#94a3b8' }}>{fmtDate(o.pub_date)}</span>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, background: '#eff6ff', color: '#1a56db', fontWeight: 600 }}>
+                              {o.score_total.toFixed(1)}分
+                            </span>
+                            {oppStage !== 'tender' && nextStageOf(oppStage) && (
+                              <button style={{ ...btnGhost, fontSize: 11, padding: '4px 8px' }}
+                                onClick={() => moveStage(o, nextStageOf(oppStage)!)}>
+                                <ArrowRight size={12} /> {STAGE_LABEL[nextStageOf(oppStage)!]}
+                              </button>
+                            )}
+                            {oppStage !== 'candidate' && prevStageOf(oppStage) && (
+                              <button style={{ ...btnGhost, fontSize: 11, padding: '4px 8px', color: '#dc2626' }}
+                                onClick={() => moveStage(o, prevStageOf(oppStage)!)}>
+                                <ArrowLeft size={12} /> {STAGE_LABEL[prevStageOf(oppStage)!]}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop: 22, borderTop: '1px solid #e2e8f0', paddingTop: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 8 }}>
+                    资讯热点 · 加入商机
+                  </div>
+                  {allHotspotsLoading ? (
+                    <div style={{ color: '#94a3b8', fontSize: 12 }}><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> 加载中…</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+                      {allHotspots.slice(0, 30).map((h) => (
+                        <div key={h.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, background: '#fafbff', padding: '10px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{h.title}</div>
+                            <div style={{ fontSize: 10, color: '#94a3b8' }}>{h.owner_org || '—'} · {h.bid_deadline || '—'} · {h.score_total.toFixed(1)}分</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                            {STAGE_ORDER.filter((s) => s !== oppStage).map((s) => (
+                              <button key={s} style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                                onClick={() => addFromHotspot(h.id, s)}>
+                                {'+'}{STAGE_LABEL[s]}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

@@ -395,6 +395,11 @@ class HotspotItem(Base):
     is_converted = Column(Boolean, default=False, index=True)
     converted_project_id = Column(String(36), default="")
 
+    # 商机阶段流转 (KB-M4): 空=未入备选, candidate=备选库, analysis=分析库, tender=投标库
+    stage = Column(String(20), default="", index=True)
+    # 多租户: 该商机归属哪家公司 (KB-M4, 单企业部署可留空)
+    company_id = Column(String(36), default="", index=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

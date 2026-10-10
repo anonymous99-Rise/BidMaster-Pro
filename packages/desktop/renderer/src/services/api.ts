@@ -836,6 +836,27 @@ export interface KbCollectTaskInfo {
   created_at: string | null;
 }
 
+export interface KbOpportunity {
+  id: string;
+  title: string;
+  url: string;
+  source: string;
+  sources: string[];
+  pub_date: string | null;
+  industry_code: string;
+  region: string;
+  amount: number;
+  bid_deadline: string;
+  owner_org: string;
+  project_code: string;
+  announce_type: string;
+  score_total: number;
+  is_hot: boolean;
+  stage: string;
+  company_id: string;
+  created_at: string | null;
+}
+
 export const kbApi = {
   listCompanies: () => api.get<{ companies: KbCompany[] }>('/kb/companies'),
   createCompany: (data: Partial<KbCompany>) => api.post<KbCompany>('/kb/companies', data),
@@ -901,6 +922,19 @@ export const kbApi = {
     api.get<{ tasks: KbCollectTaskInfo[] }>('/kb/collect-tasks',
       { params: companyId ? { company_id: companyId } : {} }),
   retryCollectTask: (taskId: string) => api.post(`/kb/collect-tasks/${taskId}/retry`),
+
+  // ── 商机分析 (KB-M4) ──
+  listOpportunities: (companyId: string, stage?: string) =>
+    api.get<{ stage: string; total: number; items: KbOpportunity[] }>(
+      `/kb/companies/${companyId}/opportunities`,
+      { params: stage ? { stage } : {} }),
+  updateOpportunityStage: (opportunityId: string, stage: string) =>
+    api.post<{ success: boolean; id: string; stage: string }>(
+      `/kb/opportunities/${opportunityId}/stage`, { stage }),
+  addOpportunityFromHotspot: (companyId: string, hotspotId: string, stage = 'candidate') =>
+    api.post<{ success: boolean; id: string; duplicated: boolean; stage: string }>(
+      `/kb/companies/${companyId}/opportunities/from-hotspot`,
+      { hotspot_id: hotspotId, stage }),
 };
 
 export const knowledgeApi = {

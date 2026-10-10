@@ -67,6 +67,9 @@ def is_db_ready() -> bool:
 _SCHEMA_EXTRA_COLUMNS = {
     "hotspot_items": [
         ("announce_type", "VARCHAR(20) DEFAULT 'tender'"),
+        # KB-M4 商机阶段流转 + 多租户
+        ("stage", "VARCHAR(20) DEFAULT ''"),
+        ("company_id", "VARCHAR(36) DEFAULT ''"),
     ],
     # KB-M3 公开采集: 业绩卡片补采集溯源字段
     "kb_achievements": [
