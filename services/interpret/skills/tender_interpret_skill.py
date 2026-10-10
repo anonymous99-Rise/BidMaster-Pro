@@ -45,6 +45,15 @@ DIMENSIONS = [
         },
     },
     {
+        "id": "qualification_table",
+        "name": "资格条件表",
+        "prompt": "提取B1~B4结构化资格条件表",
+        "schema": {
+            "title": "标题",
+            "sections": "分节列表（每节含id/title/type/columns/rows）",
+        },
+    },
+    {
         "id": "technical",
         "name": "技术需求",
         "prompt": "提取技术参数和标准",
@@ -69,6 +78,16 @@ DIMENSIONS = [
         },
     },
     {
+        "id": "scoring_table",
+        "name": "评分办法表",
+        "prompt": "提取结构化评分办法表",
+        "schema": {
+            "title": "标题",
+            "method": "评标方法",
+            "sections": "分节列表（每节含id/title/type/columns/rows）",
+        },
+    },
+    {
         "id": "disqualification",
         "name": "废标红线",
         "prompt": "提取废标条款和实质性要求",
@@ -76,6 +95,15 @@ DIMENSIONS = [
             "substantive_requirements": "实质性响应要求",
             "mandatory_conditions": "强制性条件",
             "disqualification_clauses": "废标条款列表（每项含description和clause_number）",
+        },
+    },
+    {
+        "id": "disqualification_table",
+        "name": "废标条款表",
+        "prompt": "提取结构化废标条款表",
+        "schema": {
+            "title": "标题",
+            "sections": "分节列表（每节含id/title/type/columns/rows）",
         },
     },
     {
@@ -233,6 +261,25 @@ _CHINESE_KEY_MAP: dict[str, dict[str, str]] = {
         "实质性要求": "substantive_requirements", "强制性条件": "mandatory_conditions",
         "废标条款": "disqualification_clauses",
         "non_compliance_will_be_disqualified": "disqualification_clauses",
+    },
+    "qualification_table": {
+        "标题": "title", "分节": "sections", "section": "sections",
+        "id": "id", "type": "type", "columns": "columns", "rows": "rows",
+        "B1": "sections", "B2": "sections", "B3": "sections", "B4": "sections",
+        "基本资格条件": "sections", "禁止情形": "sections",
+        "专业资质要求": "sections", "联合体要求": "sections",
+    },
+    "scoring_table": {
+        "标题": "title", "评标方法": "method", "分节": "sections",
+        "id": "id", "type": "type", "columns": "columns", "rows": "rows",
+        "C1": "sections", "C2": "sections", "C3": "sections",
+        "商务得分": "sections", "技术得分": "sections", "价格得分": "sections",
+    },
+    "disqualification_table": {
+        "标题": "title", "分节": "sections",
+        "id": "id", "type": "type", "columns": "columns", "rows": "rows",
+        "E1": "sections", "E2": "sections", "E3": "sections",
+        "废标条款": "sections", "实质性要求": "sections",
     },
     "deposit": {
         "金额": "amount", "缴纳形式": "payment_method", "截止时间": "deadline",
@@ -433,7 +480,10 @@ class TenderInterpretSkill(Skill):
             "project_info": ["项目", "招标", "采购", "预算", "编号", "公告"],
             "buyer_info": ["采购人", "招标人", "甲方", "联系人", "地址", "电话", "主管部门"],
             "qualification": ["资格", "资质", "注册资金", "业绩", "人员要求"],
+            "qualification_table": ["资格", "资质", "注册资金", "B1", "B2", "B3", "B4", "基本资格", "禁止情形", "专业资质", "联合体"],
             "technical": ["技术", "参数", "标准", "验收", "★", "▲", "强制性"],
+            "scoring_table": ["评分", "分值", "权重", "评标", "得分", "C1", "C2", "C3", "商务分", "技术分", "价格分"],
+            "disqualification_table": ["废标", "无效", "拒绝", "实质性", "否决", "E1", "E2", "E3", "红线", "强制性"],
             "deposit": ["保证金", "保函", "投标保证", "保证金额"],
             "timeline": ["截止", "开标", "公告", "时间", "日期", "日前"],
             "scoring": ["评分", "分值", "权重", "评标", "得分", "加分"],
