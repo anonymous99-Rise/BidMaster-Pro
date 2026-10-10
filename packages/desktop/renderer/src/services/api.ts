@@ -720,7 +720,7 @@ export interface HotspotDetail extends HotspotScoreDetail {
   created_at: string;
 }
 
-// === 知识库 (KB) — 公司空间 / 子库 / 上传构建 / 人审队列 / 证书字典 / 到期提醒 ===
+// === 知识库 (KB) — 工作空间 / 子库 / 上传构建 / 人审队列 / 证书字典 / 到期提醒 ===
 export type KbCategory = 'certificate' | 'personnel' | 'achievement' | 'financial' | 'credit';
 
 export interface KbCompany {

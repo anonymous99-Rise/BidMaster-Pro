@@ -24,7 +24,7 @@ const pipelineSteps = [
 
 const otherNavItems = [
   { path: '/news', icon: Newspaper, label: '资讯中心', desc: '今日热点/商机', color: '#3b82f6' },
-  { path: '/knowledge', icon: Building2, label: '知识库', desc: '公司空间/资质库', color: '#059669' },
+  { path: '/knowledge', icon: Building2, label: '知识库', desc: '工作空间/资质库', color: '#059669' },
   { path: '/settings', icon: Settings, label: '平台设置', desc: '模型/权限/技能', color: '#475569' },
 ];
 
