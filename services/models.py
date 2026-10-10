@@ -626,6 +626,10 @@ class KbAchievement(Base):
     industry_code = Column(String(20), default="", index=True)
     region = Column(String(100), default="")
     bid_result = Column(String(20), default="win")           # win/loss (未中标同样采集复盘)
+    winner_name = Column(String(300), default="")            # 公告中的中标人(公开采集)
+    source_url = Column(String(1000), default="")            # 来源公告链接(公开采集溯源)
+    announce_date = Column(String(20), default="")           # 公告日期(区别于签约日期)
+    fingerprint = Column(String(64), default="", index=True)  # 采集去重指纹
     file_ids = Column(JSON, default=list)                    # 合同/验收/发票 证明文件
     is_audited = Column(Boolean, default=False, index=True)
     audit_note = Column(Text, default="")
@@ -713,6 +717,29 @@ class KbBuildTask(Base):
     processed_files = Column(Integer, default=0)
     created_entities = Column(Integer, default=0)
     created_edges = Column(Integer, default=0)
+    error = Column(Text, default="")
+    params = Column(JSON, default=dict)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KbCollectTask(Base):
+    """公开采集任务 (W2 流水线一次运行的记录)。
+
+    按企业名搜索已接公告源 → 解析中标/未中标记录 → 去重 → 预填业绩人审队列。
+    """
+    __tablename__ = "kb_collect_tasks"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)  # pending/queued/running/done/failed
+    keyword = Column(String(300), default="")                   # 搜索用企业名
+    source_codes = Column(JSON, default=list)                   # 本次使用的资讯源 code
+    total_found = Column(Integer, default=0)                    # 公告命中总数
+    parsed = Column(Integer, default=0)                         # 解析出我方相关记录数
+    created_entities = Column(Integer, default=0)               # 新建业绩卡片数
+    duplicated = Column(Integer, default=0)                     # 去重跳过数
     error = Column(Text, default="")
     params = Column(JSON, default=dict)
     started_at = Column(DateTime, nullable=True)

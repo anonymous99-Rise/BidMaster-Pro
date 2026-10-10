@@ -26,6 +26,7 @@ from services.models import (
     KbBuildTask,
     KbCertificate,
     KbCertType,
+    KbCollectTask,
     KbCompany,
     KbCredit,
     KbEdge,
@@ -68,7 +69,8 @@ _CARD_FIELDS = {
                   "is_audited", "confidence", "source"],
     "achievement": ["id", "project_name", "client_name", "contract_no",
                     "contract_amount", "sign_date", "completion_date", "year",
-                    "project_scope", "project_type", "is_audited", "confidence", "source"],
+                    "project_scope", "project_type", "bid_result", "winner_name",
+                    "source_url", "announce_date", "is_audited", "confidence", "source"],
     "financial": ["id", "report_type", "period_start", "period_end", "year",
                   "total_assets", "revenue", "net_profit", "debt_ratio",
                   "audit_agency", "is_audited", "confidence", "source"],
@@ -735,3 +737,91 @@ async def list_files(
         }
         for f in rows
     ]}
+
+
+# ================= 公开采集 (W2) =================
+
+class CollectCreate(BaseModel):
+    keyword: str = ""                    # 搜索企业名, 留空用公司全称
+    source_codes: list[str] = []         # 指定源, 留空用全部启用的 epoint 源
+    max_per_source: int = 30
+
+
+@router.post("/companies/{company_id}/collect")
+async def start_collect(
+    company_id: str,
+    payload: CollectCreate | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发公开采集: 按企业名搜中标公告 → 预填业绩人审队列。"""
+    payload = payload or CollectCreate()
+    company = await _get_company(company_id, db)
+    keyword = (payload.keyword or "").strip() or company.name
+    task = KbCollectTask(
+        company_id=company_id, status="pending", keyword=keyword,
+        params={"source_codes": payload.source_codes or None,
+                "max_per_source": payload.max_per_source},
+    )
+    db.add(task)
+    await db.flush()
+    task_id = str(task.id)
+    # 先提交再投递: worker 抢跑会在任务行可见前查库
+    await db.commit()
+    try:
+        from services.celery_app import run_kb_collect
+        run_kb_collect.delay(task_id)
+        await db.execute(update(KbCollectTask).where(
+            KbCollectTask.id == task_id).values(status="queued"))
+    except Exception as e:
+        logger.warning(f"公开采集任务投递失败 (可稍后重试): {e}")
+        await db.execute(update(KbCollectTask).where(
+            KbCollectTask.id == task_id).values(
+            status="failed", error=f"投递失败: {e}"[:500]))
+    await db.commit()
+    return {"success": True, "task_id": task_id, "keyword": keyword}
+
+
+@router.get("/collect-tasks")
+async def list_collect_tasks(
+    company_id: str | None = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(KbCollectTask).order_by(KbCollectTask.created_at.desc()).limit(limit)
+    if company_id:
+        stmt = stmt.where(KbCollectTask.company_id == company_id)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {"tasks": [
+        {
+            "id": str(t.id), "company_id": str(t.company_id), "status": t.status,
+            "keyword": t.keyword, "source_codes": t.source_codes or [],
+            "total_found": t.total_found, "parsed": t.parsed,
+            "created_entities": t.created_entities, "duplicated": t.duplicated,
+            "error": t.error, "created_at": _iso(t.created_at),
+        }
+        for t in rows
+    ]}
+
+
+@router.post("/collect-tasks/{task_id}/retry")
+async def retry_collect_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    task = (await db.execute(
+        select(KbCollectTask).where(KbCollectTask.id == task_id)
+    )).scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="采集任务不存在")
+    if task.status == "running":
+        raise HTTPException(status_code=400, detail="任务正在运行中")
+    await db.execute(update(KbCollectTask).where(
+        KbCollectTask.id == task_id).values(status="queued", error=""))
+    await db.commit()
+    try:
+        from services.celery_app import run_kb_collect
+        run_kb_collect.delay(task_id)
+    except Exception as e:
+        await db.execute(update(KbCollectTask).where(
+            KbCollectTask.id == task_id).values(
+            status="failed", error=f"投递失败: {e}"[:500]))
+        await db.commit()
+        raise HTTPException(status_code=500, detail=f"投递失败: {e}")
+    return {"success": True, "task_id": task_id}

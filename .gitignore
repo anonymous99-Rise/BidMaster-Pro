@@ -53,4 +53,5 @@ test_outline_gen.py
 # ===== 工具目录 =====
 /.codeartsdoer/
 /tests/
+/.scratch/
 

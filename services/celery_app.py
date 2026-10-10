@@ -181,6 +181,55 @@ def run_kb_pipeline(self, task_id: str):
     return _run_task(_run)
 
 
+@celery_app.task(name="services.celery_app.run_kb_collect", bind=True)
+def run_kb_collect(self, task_id: str):
+    """W2 公开采集: 按企业名搜索公告源 → 解析中标/未中标 → 预填业绩人审队列。"""
+    async def _run():
+        from sqlalchemy import select
+        from services.database import async_session
+        from services.models import KbCollectTask, KbCompany
+        from services.kb.collect import KbCollectPipeline
+
+        async with async_session()() as db:
+            task_row = (await db.execute(
+                select(KbCollectTask).where(KbCollectTask.id == task_id)
+            )).scalar_one_or_none()
+            if not task_row:
+                return {"error": "采集任务不存在"}
+            if task_row.status == "running":
+                return {"error": "任务仍在运行中", "task_id": task_id}
+
+            company = (await db.execute(
+                select(KbCompany).where(KbCompany.id == task_row.company_id)
+            )).scalar_one_or_none()
+            if not company:
+                task_row.status = "failed"
+                task_row.error = "公司空间不存在"
+                await db.commit()
+                return {"error": task_row.error}
+
+            # 搜索词: 任务指定优先, 否则用公司全称
+            keyword = (task_row.keyword or "").strip() or company.name
+            params = task_row.params or {}
+            pipeline = KbCollectPipeline(
+                db=db, company_id=str(task_row.company_id), task=task_row,
+                company_name=keyword,
+                source_codes=params.get("source_codes"),
+                max_per_source=int(params.get("max_per_source", 30)),
+            )
+            try:
+                result = await pipeline.run()
+            except Exception as e:
+                task_row.status = "failed"
+                task_row.error = f"采集异常: {e}"[:500]
+                await db.commit()
+                return {"error": task_row.error, "task_id": task_id}
+            await db.commit()
+            return result
+
+    return _run_task(_run)
+
+
 @celery_app.task(name="services.celery_app.run_kb_expiry_scan", bind=True)
 def run_kb_expiry_scan(self):
     """每日重算证书/人员证书 status (valid/expiring/expired)。

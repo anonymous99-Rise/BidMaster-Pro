@@ -822,6 +822,20 @@ export interface KbGraph {
   stats: Record<string, number>;
 }
 
+export interface KbCollectTaskInfo {
+  id: string;
+  company_id: string;
+  status: string;
+  keyword: string;
+  source_codes: string[];
+  total_found: number;
+  parsed: number;
+  created_entities: number;
+  duplicated: number;
+  error: string;
+  created_at: string | null;
+}
+
 export const kbApi = {
   listCompanies: () => api.get<{ companies: KbCompany[] }>('/kb/companies'),
   createCompany: (data: Partial<KbCompany>) => api.post<KbCompany>('/kb/companies', data),
@@ -879,6 +893,14 @@ export const kbApi = {
 
   graph: (companyId: string, audit: 'all' | 'audited' = 'all') =>
     api.get<KbGraph>(`/kb/companies/${companyId}/graph`, { params: { audit } }),
+
+  startCollect: (companyId: string, data: { keyword?: string; source_codes?: string[]; max_per_source?: number }) =>
+    api.post<{ success: boolean; task_id: string; keyword: string }>(
+      `/kb/companies/${companyId}/collect`, data),
+  listCollectTasks: (companyId?: string) =>
+    api.get<{ tasks: KbCollectTaskInfo[] }>('/kb/collect-tasks',
+      { params: companyId ? { company_id: companyId } : {} }),
+  retryCollectTask: (taskId: string) => api.post(`/kb/collect-tasks/${taskId}/retry`),
 };
 
 export const knowledgeApi = {

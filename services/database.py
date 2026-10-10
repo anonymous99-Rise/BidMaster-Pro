@@ -68,6 +68,13 @@ _SCHEMA_EXTRA_COLUMNS = {
     "hotspot_items": [
         ("announce_type", "VARCHAR(20) DEFAULT 'tender'"),
     ],
+    # KB-M3 公开采集: 业绩卡片补采集溯源字段
+    "kb_achievements": [
+        ("winner_name", "VARCHAR(300) DEFAULT ''"),
+        ("source_url", "VARCHAR(1000) DEFAULT ''"),
+        ("announce_date", "VARCHAR(20) DEFAULT ''"),
+        ("fingerprint", "VARCHAR(64) DEFAULT ''"),
+    ],
 }
 
 

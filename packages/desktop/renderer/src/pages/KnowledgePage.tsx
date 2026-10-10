@@ -3,15 +3,15 @@ import {
   Building2, Plus, Trash2, UploadCloud, FolderArchive, Search, Loader2, Check, X,
   AlertTriangle, Award, Users, Briefcase, Wallet, ShieldCheck, LayoutDashboard,
   FolderOpen, CheckCircle, Database, RefreshCw, RotateCcw, File as FileIcon,
-  Share2, ZoomIn, ZoomOut, Maximize2,
+  Share2, ZoomIn, ZoomOut, Maximize2, Globe,
 } from 'lucide-react';
 import {
   kbApi, type KbCompany, type KbCard, type KbReviewItem, type KbCertType,
   type KbExpiryAlert, type KbBuildTaskInfo, type KbFileInfo, type KbCategory,
-  type KbGraph, type KbGraphNode,
+  type KbGraph, type KbGraphNode, type KbCollectTaskInfo,
 } from '../services/api';
 
-type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'cert-dict' | 'files';
+type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'collect' | 'cert-dict' | 'files';
 
 const SUBS: Array<{ key: KbCategory; label: string; desc: string; icon: typeof Award; color: string }> = [
   { key: 'certificate', label: '资质证书', desc: '企业资质/体系/许可证', icon: Award, color: '#3b82f6' },
@@ -476,6 +476,9 @@ export default function KnowledgePage() {
   const [tasks, setTasks] = useState<KbBuildTaskInfo[]>([]);
   const [files, setFiles] = useState<KbFileInfo[]>([]);
   const [filesTab, setFilesTab] = useState<'files' | 'tasks'>('files');
+  const [collectTasks, setCollectTasks] = useState<KbCollectTaskInfo[]>([]);
+  const [collectKeyword, setCollectKeyword] = useState('');
+  const [collecting, setCollecting] = useState(false);
 
   const [showCert, setShowCert] = useState(false);
   const [nct, setNct] = useState({ code: '', name: '', category: 'enterprise', default_valid_months: 0, scope_hint: '' });
@@ -550,6 +553,35 @@ export default function KnowledgePage() {
     } catch (e) { notify('error', `加载构建任务失败: ${errMsg(e)}`); }
   }, [notify]);
 
+  const loadCollectTasks = useCallback(async (companyId?: string) => {
+    try {
+      const { data } = await kbApi.listCollectTasks(companyId);
+      setCollectTasks(data.tasks);
+    } catch (e) { notify('error', `加载采集任务失败: ${errMsg(e)}`); }
+  }, [notify]);
+
+  const startCollect = async () => {
+    if (!cid) return;
+    setCollecting(true);
+    try {
+      const { data } = await kbApi.startCollect(cid, {
+        keyword: collectKeyword.trim() || undefined,
+        max_per_source: 30,
+      });
+      notify('success', `采集任务已提交: ${data.keyword}`);
+      await loadCollectTasks(cid);
+    } catch (e) { notify('error', `触发采集失败: ${errMsg(e)}`); }
+    finally { setCollecting(false); }
+  };
+
+  const retryCollect = async (taskId: string) => {
+    try {
+      await kbApi.retryCollectTask(taskId);
+      notify('success', '采集任务已重新提交');
+      await loadCollectTasks(cid);
+    } catch (e) { notify('error', `重试失败: ${errMsg(e)}`); }
+  };
+
   const loadFiles = useCallback(async (companyId?: string) => {
     const id = companyId ?? activeCompany?.id;
     if (!id) return;
@@ -575,10 +607,18 @@ export default function KnowledgePage() {
   useEffect(() => { if (cid) loadCards(cid); }, [cid, subKey, cardsFilter.audit, cardsFilter.status]);
   useEffect(() => {
     if (!cid) return;
-    loadReview(cid); loadAlerts(cid); loadFiles(cid); loadTasks(cid);
-  }, [cid, loadReview, loadAlerts, loadFiles, loadTasks]);
+    loadReview(cid); loadAlerts(cid); loadFiles(cid); loadTasks(cid); loadCollectTasks(cid);
+  }, [cid, loadReview, loadAlerts, loadFiles, loadTasks, loadCollectTasks]);
   useEffect(() => { if (tab === 'cert-dict') loadCertTypes(); }, [tab, loadCertTypes]);
   useEffect(() => { if (cid && tab === 'graph') loadGraph(cid); }, [cid, tab, graphAudit, loadGraph]);
+  useEffect(() => { if (cid && tab === 'collect') loadCollectTasks(cid); }, [cid, tab, loadCollectTasks]);
+  // 有采集任务在排队/运行中时轮询刷新 (celery 异步完成)
+  useEffect(() => {
+    const active = collectTasks.some((t) => t.status === 'pending' || t.status === 'queued' || t.status === 'running');
+    if (!active || !cid) return;
+    const timer = setInterval(() => loadCollectTasks(cid), 4000);
+    return () => clearInterval(timer);
+  }, [collectTasks, cid, loadCollectTasks]);
 
   // 图谱节点直达子库: 切到子库页签并按标签搜索定位该卡片
   const jumpToSub = async (cat: KbCategory, node: KbGraphNode) => {
@@ -798,6 +838,7 @@ export default function KnowledgePage() {
               { key: 'overview', label: '概览', icon: LayoutDashboard },
               { key: 'graph', label: '图谱', icon: Share2 },
               { key: 'sub-libraries', label: '子库', icon: FolderOpen },
+              { key: 'collect', label: '公开采集', icon: Globe },
               { key: 'review', label: '人审队列', icon: CheckCircle, badge: reviewItems.length },
               { key: 'alerts', label: '到期提醒', icon: AlertTriangle, badge: alerts.length },
               { key: 'files', label: '文件与任务', icon: Database },
@@ -841,6 +882,78 @@ export default function KnowledgePage() {
                 onRefresh={() => loadGraph(cid)}
                 onJump={jumpToSub}
               />
+            )}
+
+            {cid && tab === 'collect' && (
+              <div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>公开采集 · 业绩预填</div>
+                  <div style={{ fontSize: 11, color: '#64748b' }}>
+                    按企业名搜索已接入的公共资源交易平台公告，自动解析中标/未中标记录并预填到业绩库（待人工审核）。
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                  <input
+                    value={collectKeyword}
+                    onChange={(e) => setCollectKeyword(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') startCollect(); }}
+                    placeholder={`企业名（留空用「${activeCompany?.name || '公司全称'}」）`}
+                    style={{ ...inputStyle, flex: 1, minWidth: 240 }}
+                  />
+                  <button style={btnPrimary} onClick={startCollect} disabled={collecting}>
+                    {collecting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Globe size={14} />} 开始采集
+                  </button>
+                  <button style={btnGhost} onClick={() => loadCollectTasks(cid)}><RefreshCw size={14} /> 刷新</button>
+                </div>
+
+                {collectTasks.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8', fontSize: 13 }}>
+                    暂无采集记录，点击「开始采集」抓取公开中标公告
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {collectTasks.map((t) => {
+                      const running = t.status === 'running' || t.status === 'queued' || t.status === 'pending';
+                      const badge = t.status === 'done'
+                        ? { text: '完成', color: '#059669', bg: '#ecfdf5' }
+                        : t.status === 'failed'
+                          ? { text: '失败', color: '#dc2626', bg: '#fef2f2' }
+                          : { text: '进行中', color: '#d97706', bg: '#fffbeb' };
+                      return (
+                        <div key={t.id} style={{ border: '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: '12px 14px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 6, fontWeight: 700, background: badge.bg, color: badge.color }}>{badge.text}</span>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{t.keyword || '—'}</span>
+                            {running && <Loader2 size={13} color="#d97706" style={{ animation: 'spin 1s linear infinite' }} />}
+                            <span style={{ marginLeft: 'auto', fontSize: 11, color: '#94a3b8' }}>{fmtDate(t.created_at)}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12, color: '#475569', flexWrap: 'wrap' }}>
+                            <span>命中公告 <b>{t.total_found}</b></span>
+                            <span>解析相关 <b>{t.parsed}</b></span>
+                            <span style={{ color: '#059669' }}>新增业绩 <b>{t.created_entities}</b></span>
+                            <span>去重跳过 <b>{t.duplicated}</b></span>
+                          </div>
+                          {t.error && <div style={{ marginTop: 6, fontSize: 11, color: '#dc2626' }}>{t.error}</div>}
+                          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                            {t.status === 'done' && t.created_entities > 0 && (
+                              <button style={{ ...btnGhost, fontSize: 11, padding: '4px 10px' }}
+                                onClick={() => setTab('review')}>
+                                去人审队列确认
+                              </button>
+                            )}
+                            {t.status === 'failed' && (
+                              <button style={{ ...btnGhost, fontSize: 11, padding: '4px 10px' }}
+                                onClick={() => retryCollect(t.id)}>
+                                <RotateCcw size={12} /> 重试
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
 
             {cid && tab === 'sub-libraries' && (
