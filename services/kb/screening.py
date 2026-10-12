@@ -106,7 +106,7 @@ def check_numeric(company_values: dict, req: dict) -> dict:
     rule, need = req["rule"], req["value"]
     have = company_values.get(rule)
     if have is None:
-        return {"verdict": "needs_review", "reason": f"知识库缺少 {rule} 数值"}
+        return {"verdict": "needs_review", "reason": f"知识库缺少 {rule} 数值", "rule": rule}
     direction = _RULE_PATTERNS[rule][1]
     ok = (have >= need) if direction > 0 else (have <= need)
     return {
