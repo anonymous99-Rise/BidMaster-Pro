@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from celery import Celery
@@ -33,6 +34,11 @@ celery_app.conf.update(
             "task": "services.celery_app.run_kb_expiry_scan",
             "schedule": 86400,  # 每日
         },
+        # W2 公开采集: 每日清晨遍历全部公司空间, 逐家投递 run_kb_collect
+        "kb-collect-all": {
+            "task": "services.celery_app.run_kb_collect_all",
+            "schedule": 86400,
+        },
     },
 )
 
@@ -56,6 +62,19 @@ def _run_task(coro_factory):
     return asyncio.run(_runner())
 
 
+async def _force_task_failed(model, task_id: str, error: str):
+    """session 污染后的兜底: 用全新连接把任务置 failed, 防 status 永久卡 running。"""
+    from services.database import get_session_factory
+    from sqlalchemy import update
+    try:
+        async with get_session_factory()() as db:
+            await db.execute(update(model).where(model.id == task_id).values(
+                status="failed", error=error))
+            await db.commit()
+    except Exception as e2:
+        logging.getLogger(__name__).error(f"任务 {task_id} 兜底置 failed 也失败: {e2}")
+
+
 @celery_app.task(name="services.celery_app.run_news_monitor", bind=True)
 def run_news_monitor(self):
     """定时聚合采集: 每小时抓取所有 enabled 数据源并入库
@@ -65,10 +84,10 @@ def run_news_monitor(self):
     """
     async def _run():
         from sqlalchemy import select
-        from services.database import async_session
+        from services.database import get_session_factory
         from services.models import CompanyProfile
 
-        async with async_session()() as db:
+        async with get_session_factory()() as db:
             from services.news.aggregate_service import run_aggregation
 
             # 定时采集自动带上已保存的公司画像, 让评分贴合企业业务偏好
@@ -91,65 +110,17 @@ def run_news_monitor(self):
     return _run_task(_run)
 
 
-@celery_app.task(name="services.celery_app.run_full_check", bind=True)
-def run_full_check(self, project_id: str):
-    async def _run():
-        from services.routers.check import _get_tender_and_bid_text
-        from services.database import async_session
-        from services.llm_factory import get_llm_gateway
-        from core.skill_engine.base import SkillContext
-        from services.check.skills.selfcheck_list_skill import SelfcheckListSkill
-
-        async with async_session()() as db:
-            _, tender_text, bid_text = await _get_tender_and_bid_text(project_id, db)
-            if not tender_text or not bid_text:
-                return {"error": "招标文件或投标文件内容为空"}
-
-            gateway = get_llm_gateway()
-            skill = SelfcheckListSkill()
-            ctx = SkillContext(
-                project_id=project_id, db=db, llm=gateway,
-                parameters={"tender_text": tender_text, "bid_text": bid_text},
-            )
-            result = await skill.safe_execute(ctx)
-            return {"success": result.success, "data": result.data}
-
-    return _run_task(_run)
-
-
-@celery_app.task(name="services.celery_app.run_batch_format", bind=True)
-def run_batch_format(self, file_paths: list[str], template: str = "default"):
-    async def _run():
-        from services.format.skills.docx_format_skill import DocxFormatSkill
-        from services.llm_factory import get_llm_gateway
-        from core.skill_engine.base import SkillContext
-
-        gateway = get_llm_gateway()
-        skill = DocxFormatSkill()
-        results = []
-        for fp in file_paths:
-            ctx = SkillContext(
-                project_id="", db=None, llm=gateway,
-                parameters={"file_path": fp, "template": template},
-            )
-            result = await skill.safe_execute(ctx)
-            results.append({"file": fp, "success": result.success, "output": result.data.get("output_path") if result.success else result.error})
-        return results
-
-    return _run_task(_run)
-
-
 @celery_app.task(name="services.celery_app.run_kb_pipeline", bind=True)
 def run_kb_pipeline(self, task_id: str):
     """W1 知识库构建流水线: 对指定构建任务的文件做 提取→分类→结构化→入池。"""
     async def _run():
         from sqlalchemy import select
-        from services.database import async_session
+        from services.database import get_session_factory
         from services.models import KbBuildTask
         from services.kb.pipeline import KbPipeline
         from services.llm_factory import get_llm_gateway
 
-        async with async_session()() as db:
+        async with get_session_factory()() as db:
             task_row = (await db.execute(
                 select(KbBuildTask).where(KbBuildTask.id == task_id)
             )).scalar_one_or_none()
@@ -170,10 +141,14 @@ def run_kb_pipeline(self, task_id: str):
             try:
                 result = await pipeline.run(file_ids)
             except Exception as e:
-                # 任务级异常: 置 failed, 避免 status 卡死 running 导致无法 retry
+                # 任务级异常: 置 failed, 避免 status 卡死 running 导致无法 retry;
+                # 本 session 可能已被污染, commit 失败时换独立连接兜底
                 task_row.status = "failed"
                 task_row.error = f"流水线异常: {e}"[:500]
-                await db.commit()
+                try:
+                    await db.commit()
+                except Exception:
+                    await _force_task_failed(KbBuildTask, task_id, task_row.error)
                 return {"error": task_row.error, "task_id": task_id}
             await db.commit()
             return result
@@ -186,11 +161,11 @@ def run_kb_collect(self, task_id: str):
     """W2 公开采集: 按企业名搜索公告源 → 解析中标/未中标 → 预填业绩人审队列。"""
     async def _run():
         from sqlalchemy import select
-        from services.database import async_session
+        from services.database import get_session_factory
         from services.models import KbCollectTask, KbCompany
         from services.kb.collect import KbCollectPipeline
 
-        async with async_session()() as db:
+        async with get_session_factory()() as db:
             task_row = (await db.execute(
                 select(KbCollectTask).where(KbCollectTask.id == task_id)
             )).scalar_one_or_none()
@@ -222,7 +197,10 @@ def run_kb_collect(self, task_id: str):
             except Exception as e:
                 task_row.status = "failed"
                 task_row.error = f"采集异常: {e}"[:500]
-                await db.commit()
+                try:
+                    await db.commit()
+                except Exception:
+                    await _force_task_failed(KbCollectTask, task_id, task_row.error)
                 return {"error": task_row.error, "task_id": task_id}
             await db.commit()
             return result
@@ -239,13 +217,13 @@ def run_kb_expiry_scan(self):
     async def _run():
         from datetime import datetime, date
         from sqlalchemy import select
-        from services.database import async_session
+        from services.database import get_session_factory
         from services.models import KbCertificate, KbPersonnelCertificate
 
         today = date.today()
         updated = 0
         expiring = 0
-        async with async_session()() as db:
+        async with get_session_factory()() as db:
             for model in (KbCertificate, KbPersonnelCertificate):
                 rows = (await db.execute(select(model))).scalars().all()
                 for row in rows:
@@ -266,5 +244,42 @@ def run_kb_expiry_scan(self):
                         expiring += 1
             await db.commit()
         return {"updated": updated, "expiring_or_expired": expiring}
+
+    return _run_task(_run)
+
+
+@celery_app.task(name="services.celery_app.run_kb_collect_all", bind=True)
+def run_kb_collect_all(self):
+    """W2 定时采集 (每日): 遍历全部公司空间, 逐家投递 run_kb_collect。
+
+    每家公司一个独立采集任务行, 失败互不影响; 与 celery_app.run_kb_collect
+    (W2 单次) 共用执行体。
+    """
+    async def _run():
+        from sqlalchemy import select
+        from services.database import get_session_factory
+        from services.models import KbCompany, KbCollectTask
+
+        dispatched = []
+        async with get_session_factory()() as db:
+            companies = (await db.execute(select(KbCompany))).scalars().all()
+            for c in companies:
+                task = KbCollectTask(
+                    company_id=str(c.id), status="pending", keyword=c.name,
+                    params={}, )
+                db.add(task)
+                await db.flush()
+                dispatched.append(str(task.id))
+            await db.commit()
+
+        from services.celery_app import run_kb_collect
+        ok = 0
+        for task_id in dispatched:
+            try:
+                run_kb_collect.delay(task_id)
+                ok += 1
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"W2 定时采集投递失败 {task_id}: {e}")
+        return {"dispatched": len(dispatched), "delivered": ok}
 
     return _run_task(_run)

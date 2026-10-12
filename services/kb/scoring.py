@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 TEAM_CAPS = {"lead": 3.0, "tech_lead": 3.0, "members": 9.0}
 PERF_CAP = 5.0
@@ -54,7 +54,7 @@ def optimize_team(personnel: list[dict], certs_by_person: dict) -> dict:
         pid = p.get("id")
         certs = certs_by_person.get(pid, [])
         # 只计有效期内证书
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         valid = [c for c in certs
                  if not (c.get("valid_until") or "") or str(c["valid_until"])[:10] >= today]
         level = _person_best_level(valid)
@@ -77,8 +77,12 @@ def optimize_team(personnel: list[dict], certs_by_person: dict) -> dict:
     pool = seniors + intermediates
     members = [s for s in pool if s["person_id"] not in used]
 
-    lead_score = 2.0 if lead else 0.0
-    tech_score = 2.0 if tech_lead else 0.0
+    # 负责人/技术负责人: 高级 +2, 中级 +1 (各满 3, 设计 9.1)
+    # 中级任技术负责人只值 1 分, 此前固定 2 分会虚高团队分误导投标准备
+    lead_score = (2.0 if lead and lead["level"] == "senior"
+                  else 1.0 if lead else 0.0)
+    tech_score = (2.0 if tech_lead and tech_lead["level"] == "senior"
+                  else 1.0 if tech_lead else 0.0)
     member_score = sum(1.0 if m["level"] == "senior" else 0.5
                        for m in members[: int(TEAM_CAPS["members"] / 0.5)])
     member_score = min(member_score, TEAM_CAPS["members"])
@@ -90,7 +94,9 @@ def optimize_team(personnel: list[dict], certs_by_person: dict) -> dict:
     if not lead:
         gaps.append("缺软考高级证书人员 → 任项目负责人 +2 分")
     if not tech_lead:
-        gaps.append("缺第 2 名软考高级(或中级) → 任技术负责人 +2 分")
+        gaps.append("缺第 2 名软考高级(或中级) → 任技术负责人 +2/+1 分")
+    elif tech_lead["level"] != "senior":
+        gaps.append("技术负责人仅中级 → 换高级证书人员 +1 分")
     senior_members = sum(1 for m in members if m["level"] == "senior")
     if senior_members < 9:
         gaps.append(f"成员软考高级 {senior_members}/9 人, 每再增 1 名高级 +1 分")
@@ -118,7 +124,7 @@ def score_performance(achievements: list[dict],
     achievements: [{announce_date/sign_date, project_name, bid_result}]
     similar_keywords 为空 → 视为全部类似 (宽松)。
     """
-    cutoff = (datetime.utcnow() - timedelta(days=365 * years)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=365 * years)).strftime("%Y-%m-%d")
     similar = []
     for a in achievements:
         d = str(a.get("announce_date") or a.get("sign_date") or "")[:10]

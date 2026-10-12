@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select, update
@@ -31,8 +31,14 @@ from services.models import ApiKey, ApiKeyUsage
 logger = logging.getLogger(__name__)
 
 # 允许跳过 API Key 验证的开发模式（环境变量控制）
+# debug 关闭时(生产)强制失效, 防止生产环境漏关 bypass 裸奔
 import os
-_DEV_BYPASS = os.environ.get("BIDMASTER_DEV_BYPASS_API_KEY", "").lower() in ("1", "true", "yes")
+from core.settings import get_settings
+
+def _dev_bypass_enabled() -> bool:
+    if os.environ.get("BIDMASTER_DEV_BYPASS_API_KEY", "").lower() not in ("1", "true", "yes"):
+        return False
+    return get_settings().debug
 
 
 def _hash_key(raw: str) -> str:
@@ -67,13 +73,18 @@ async def _verify_api_key(request: Request, db: AsyncSession) -> ApiKey:
         raise HTTPException(status_code=401, detail="API Key 无效")
     if not api_key.enabled:
         raise HTTPException(status_code=403, detail="API Key 已被禁用")
-    if api_key.expires_at and api_key.expires_at < datetime.utcnow():
-        raise HTTPException(status_code=403, detail="API Key 已过期")
+    # 存量行是 naive UTC, 新写入是 aware UTC —— 统一补 tz 再比较避免 TypeError
+    if api_key.expires_at:
+        expires = api_key.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=403, detail="API Key 已过期")
 
     # 记录最后使用时间（异步不阻塞）
     try:
         await db.execute(
-            update(ApiKey).where(ApiKey.id == api_key.id).values(last_used_at=datetime.utcnow())
+            update(ApiKey).where(ApiKey.id == api_key.id).values(last_used_at=datetime.now(timezone.utc))
         )
         await db.flush()
     except Exception as e:
@@ -100,7 +111,7 @@ async def _verify_api_key(request: Request, db: AsyncSession) -> ApiKey:
 
 async def require_api_key(request: Request, db: AsyncSession = Depends(get_db)) -> ApiKey:
     """依赖项：要求有效 API Key（任何 type 均可）"""
-    if _DEV_BYPASS:
+    if _dev_bypass_enabled():
         # 开发模式：返回一个虚拟的 ApiKey 对象
         return ApiKey(
             id="dev", key_hash="dev", key_prefix="dev",
@@ -116,7 +127,7 @@ async def require_api_key_subscription(
     request: Request, db: AsyncSession = Depends(get_db)
 ) -> ApiKey:
     """依赖项：要求 subscription 类型的 API Key（数据服务：热点、模板）"""
-    if _DEV_BYPASS:
+    if _dev_bypass_enabled():
         return await require_api_key(request, db)
     api_key = await _verify_api_key(request, db)
     if api_key.type not in ("subscription", "credits"):
@@ -132,7 +143,7 @@ async def require_api_key_credits(
     仅验证 Key 有效性，不在此处扣费。扣费由具体路由调用 consume_credits() 完成，
     因为不同算力服务消耗的 credits 数量不同。
     """
-    if _DEV_BYPASS:
+    if _dev_bypass_enabled():
         return await require_api_key(request, db)
     api_key = await _verify_api_key(request, db)
     if api_key.type != "credits":
@@ -159,7 +170,7 @@ async def consume_credits(
     await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key.id)
-        .values(credits_remaining=new_balance, updated_at=datetime.utcnow())
+        .values(credits_remaining=new_balance, updated_at=datetime.now(timezone.utc))
     )
 
     # 写入扣费日志
@@ -189,7 +200,7 @@ async def refund_credits(
     await db.execute(
         update(ApiKey)
         .where(ApiKey.id == api_key.id)
-        .values(credits_remaining=new_balance, updated_at=datetime.utcnow())
+        .values(credits_remaining=new_balance, updated_at=datetime.now(timezone.utc))
     )
     usage = ApiKeyUsage(
         api_key_id=api_key.id,
@@ -231,6 +242,17 @@ class AuthPrincipal:
             return getattr(self.user, "email", "unknown")
         return "dev"
 
+    @property
+    def user_id(self) -> str:
+        """Bearer 用户的 id, API Key / dev 主体为空串"""
+        if self.user is not None:
+            return getattr(self.user, "id", "") or ""
+        return ""
+
+    @property
+    def is_admin(self) -> bool:
+        return self.user is not None and getattr(self.user, "role", "") == "admin"
+
 
 async def require_any_auth(
     request: Request, db: AsyncSession = Depends(get_db)
@@ -239,7 +261,7 @@ async def require_any_auth(
 
     用于同时服务桌面端（API Key）和 Web 端（Bearer Token）的端点。
     """
-    if _DEV_BYPASS:
+    if _dev_bypass_enabled():
         return AuthPrincipal(source="dev")
 
     raw = _extract_api_key(request)

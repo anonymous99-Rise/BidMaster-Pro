@@ -139,7 +139,9 @@ services:
     image: ${DOCKER_REGISTRY:-docker.m.daocloud.io}/library/redis:7-alpine
     restart: unless-stopped
     profiles: ["infra"]
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    # celery broker/backend 与业务缓存共用此实例: noeviction 防止内存压力下
+    # celery 队列消息被 LRU 静默逐出(allkeys-lru 会丢任务), 满了直接报错更安全
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
     ports:
       - "${REDIS_EXTERNAL_PORT:-16379}:6379"
     volumes:
@@ -152,6 +154,8 @@ services:
     logging: *default-logging
 
   # ─────────────── MinIO 对象存储（--profile infra 启用）───────────────
+  # 密码必须通过 .env 设置 MINIO_ROOT_USER/MINIO_ROOT_PASSWORD,
+  # 默认 minioadmin 组合会在启动时被 entrypoint 校验拒绝
   minio:
     image: ${MINIO_REGISTRY:-docker.1panel.live}/minio/minio:latest
     restart: unless-stopped

@@ -6,13 +6,14 @@ import {
   Share2, ZoomIn, ZoomOut, Maximize2, Globe, ArrowRight, ArrowLeft,
   Filter, Calculator, FileDown,
 } from 'lucide-react';
-import apiClient from '../services/api';
+import { Toast, type ToastState } from '../components/common/Toast';
+import apiClient, { interpretApi } from '../services/api';
 import {
   kbApi, type KbCompany, type KbCard, type KbReviewItem, type KbCertType,
   type KbExpiryAlert, type KbBuildTaskInfo, type KbFileInfo, type KbCategory,
   type KbGraph, type KbGraphNode, type KbCollectTaskInfo, type KbOpportunity,
   type KbScreenSummary, type KbScreenItem, type KbRedline, type KbResponseRow,
-  type KbTeamResult, type KbPerformanceResult, type KbScoringSummary,
+  type KbTeamResult, type KbPerformanceResult, type KbScoringSummary, type Hotspot,
 } from '../services/api';
 
 type KbTab = 'overview' | 'graph' | 'sub-libraries' | 'review' | 'alerts' | 'collect' | 'cert-dict' | 'files' | 'opportunities';
@@ -461,7 +462,7 @@ export default function KnowledgePage() {
   const [activeCompany, setActiveCompany] = useState<KbCompany | null>(null);
   const [tab, setTab] = useState<KbTab>('overview');
   const [loading, setLoading] = useState(false);
-  const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
 
   const [showCompany, setShowCompany] = useState(false);
   const [nc, setNc] = useState({ name: '', short_name: '', unified_social_code: '', legal_person: '', industry_code: '', region: '', contact: '', description: '' });
@@ -494,7 +495,7 @@ export default function KnowledgePage() {
   const [opportunities, setOpportunities] = useState<KbOpportunity[]>([]);
   const [opportunitiesTotal, setOpportunitiesTotal] = useState(0);
   const [opportunitiesLoading, setOpportunitiesLoading] = useState(false);
-  const [allHotspots, setAllHotspots] = useState<KbOpportunity[]>([]);
+  const [allHotspots, setAllHotspots] = useState<Hotspot[]>([]);
   const [allHotspotsLoading, setAllHotspotsLoading] = useState(false);
 
   const [showCert, setShowCert] = useState(false);
@@ -614,7 +615,10 @@ export default function KnowledgePage() {
   const loadAllHotspots = useCallback(async (silent = false) => {
     if (!silent) setAllHotspotsLoading(true);
     try {
-      const { data } = await kbApi.listOpportunities('', '');
+      // 全局资讯热点来自 /news/hotspots (此前误调 kbApi.listOpportunities('', '') 拼
+      // 出 /kb/companies//opportunities 必 404, 导致"加入商机"区永远为空)
+      const { data } = await apiClient.get<{ total: number; items: Hotspot[] }>(
+        '/news/hotspots', { params: { limit: 30 } });
       setAllHotspots(data.items);
     } catch { /* 全局热点无需强提示 */ }
     finally { if (!silent) setAllHotspotsLoading(false); }
@@ -651,25 +655,53 @@ export default function KnowledgePage() {
     items: KbScreenItem[]; redlines: KbRedline[]; response_table: KbResponseRow[];
   } | null>(null);
 
+  // 解读项目导入条款 (KB-M6 主链路): 优先用解读产物 qualification_table 的真实条款,
+  // 拉不到时回退通用政采条款组。screenInterpretProjectId 由初筛弹窗输入。
+  const [screenInterpretProjectId, setScreenInterpretProjectId] = useState('');
+  const [useLlmFallback, setUseLlmFallback] = useState(true);
+
+  const DEFAULT_REQUIREMENTS = [
+    { text: '具有独立承担民事责任能力的法人 (营业执照)' },
+    { text: '具有良好的商业信誉和健全的财务会计制度' },
+    { text: '具有履行合同所必需的设备和专业技术能力' },
+    { text: '有依法缴纳税收和社会保障资金的良好记录' },
+    { text: '参加政府采购活动前三年内, 在经营活动中没有重大违法记录' },
+    { text: '信用中国网站未被列入失信被执行人名单' },
+  ];
+
   const runScreeningForOpp = async (opp: KbOpportunity) => {
     if (!cid) return;
     setScreeningTarget(opp);
     setScreeningLoading(true);
     setScreenResult(null);
     try {
-      // 条款来源: 标题+正文关键词生成的默认资格条款组 (用户可在解读页细化后重跑)
-      const text = `${opp.title} ${opp.owner_org || ''}`;
-      const requirements = [
-        { text: '具有独立承担民事责任能力的法人 (营业执照)' },
-        { text: '具有良好的商业信誉和健全的财务会计制度' },
-        { text: '具有履行合同所必需的设备和专业技术能力' },
-        { text: '有依法缴纳税收和社会保障资金的良好记录' },
-        { text: '参加政府采购活动前三年内, 在经营活动中没有重大违法记录' },
-        { text: '信用中国网站未被列入失信被执行人名单' },
-      ];
+      let requirements = DEFAULT_REQUIREMENTS;
+      let interpretJson: Record<string, unknown> | undefined;
+      // 有解读项目 ID 时拉真实解读产物 (资格条件表/废标条款表) 替代通用条款
+      if (screenInterpretProjectId.trim()) {
+        try {
+          const { data: analysis } = await interpretApi.getAnalysis(screenInterpretProjectId.trim());
+          const dims = analysis?.analysis?.dimensions as Record<string, unknown> | null | undefined;
+          const qualTable = dims?.qualification_table as { sections?: Array<{ rows?: unknown[][] }> } | undefined;
+          const rows = qualTable?.sections?.flatMap((s) => s.rows || []) || [];
+          const parsed: Array<{ text: string }> = rows
+            .map((row) => ({
+              text: row.map((c) => String(c ?? '').trim()).filter(Boolean).join(' '),
+            }))
+            .filter((r) => r.text.length >= 4);
+          if (parsed.length) {
+            requirements = parsed;
+          } else {
+            notify('error', '解读产物中无资格条件行, 已回退通用条款');
+          }
+          interpretJson = { qualification_table: qualTable ?? null };
+        } catch {
+          notify('error', '拉取解读产物失败, 已回退通用条款');
+        }
+      }
       const { data } = await kbApi.runScreening(cid, {
-        requirements, opportunity_id: opp.id, use_llm_fallback: false,
-        interpret_json: { qualification_table: { sections: [{ id: 'B1', title: '资格条件', rows: [[text]] }] } },
+        requirements, opportunity_id: opp.id, use_llm_fallback: useLlmFallback,
+        interpret_json: interpretJson as never,
       });
       setScreenResult(data);
       notify('success', `初筛完成: ${data.summary.matched}符合 / ${data.summary.failed}不符 / ${data.summary.needs_review}待审`);
@@ -1133,6 +1165,23 @@ export default function KnowledgePage() {
                   </button>
                 </div>
 
+                {/* 初筛条款来源配置: 解读项目 ID + LLM 兜底开关 (KB-M6 主链路) */}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', fontSize: 12, color: '#475569' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    解读项目 ID
+                    <input
+                      value={screenInterpretProjectId}
+                      onChange={(e) => setScreenInterpretProjectId(e.target.value)}
+                      placeholder="留空用通用政采条款; 填项目 ID 则用解读产物资格条件表"
+                      style={{ width: 280, padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }}
+                    />
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={useLlmFallback} onChange={(e) => setUseLlmFallback(e.target.checked)} />
+                    模糊条款 LLM 兜底
+                  </label>
+                </div>
+
                 {opportunitiesLoading ? (
                   <div style={{ padding: '30px 0', textAlign: 'center', color: '#94a3b8' }}>
                     <Loader2 size={22} style={{ animation: 'spin 1s linear infinite', marginBottom: 8 }} /> 加载中…
@@ -1215,6 +1264,18 @@ export default function KnowledgePage() {
                           onClick={() => downloadDoc(kbApi.downloadSmeDeclaration(cid!), '中小企业声明函.docx')}>
                           <FileDown size={11} /> 声明函
                         </button>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadAuthorizationLetter(cid!), '法定代表人授权委托书.docx')}>
+                          <FileDown size={11} /> 授权书
+                        </button>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadAchievementSummary(cid!), '业绩证明汇编.docx')}>
+                          <FileDown size={11} /> 业绩汇编
+                        </button>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '3px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadPersonnelTable(cid!), '人员配备表.docx')}>
+                          <FileDown size={11} /> 人员表
+                        </button>
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260, overflowY: 'auto' }}>
                         {screenResult.items.map((it, idx) => (
@@ -1285,6 +1346,10 @@ export default function KnowledgePage() {
                         <span>负责人: {analysisResult.team.roster.project_lead?.name || '—'}</span>
                         <span>技术负责人: {analysisResult.team.roster.tech_lead?.name || '—'}</span>
                         <span>成员 {analysisResult.team.roster.members.length} 人</span>
+                        <button style={{ ...btnGhost, fontSize: 10, padding: '2px 8px' }}
+                          onClick={() => downloadDoc(kbApi.downloadAnalysisReportDocx(analysisResult.report_id), '评分报告.docx')}>
+                          <FileDown size={11} /> 评分报告
+                        </button>
                       </div>
                       {analysisResult.scoring_summary.gaps.length > 0 && (
                         <div style={{ fontSize: 11, color: '#92400e' }}>
@@ -1651,16 +1716,7 @@ export default function KnowledgePage() {
       )}
 
       {/* ===== Toast ===== */}
-      {toast && (
-        <div style={{
-          position: 'fixed', top: 24, right: 24, zIndex: 9999,
-          padding: '10px 16px', borderRadius: 8, fontSize: 13,
-          background: toast.type === 'success' ? '#059669' : '#dc2626', color: '#fff',
-          boxShadow: '0 4px 16px rgba(0,0,0,0.18)', display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          {toast.type === 'success' ? <Check size={15} /> : <AlertTriangle size={15} />} {toast.text}
-        </div>
-      )}
+      <Toast toast={toast} />
     </div>
   );
 }

@@ -152,6 +152,12 @@ def extract_certificate(text: str, filename: str = "") -> dict:
     if "统一社会信用代码" in head or "营业执照" in head:
         rec["holder"] = "company"
 
+    # 营业执照上的注册资本 → extra (初筛数值规则的数据源, 此前从不写入导致规则永挂 needs_review)
+    if rec["name"] == "营业执照" or "注册资本" in head:
+        m = re.search(r"注册资本[^0-9]{0,20}(\d+(?:\.\d+)?)\s*万", text[:3000])
+        if m:
+            rec["extra"] = {"registered_capital": float(m.group(1))}
+
     rec["issue_date"], rec["expiry_date"] = extract_date_range(text)
     return {"certificate": rec}
 

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { newsApi, type Industry, type NewsSource, type Hotspot, type HotspotScoreDetail, type HotspotDetail } from '../services/api';
 import { useAppStore } from '../stores/appStore';
+import { Toast, type ToastState } from '../components/common/Toast';
 
 interface MonitorTask {
   id: string;
@@ -101,7 +102,7 @@ export default function NewsPage() {
   const [hotspotDetail, setHotspotDetail] = useState<HotspotDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [converting, setConverting] = useState<string>('');
-  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
 
   // 4 步向导状态
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
@@ -1715,25 +1716,7 @@ export default function NewsPage() {
         <div style={{ marginTop: '16px', padding: '12px', background: '#fef2f2', borderRadius: '8px', color: '#dc2626', fontSize: '13px' }}>{error}</div>
       )}
 
-      {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            top: '24px',
-            right: '24px',
-            padding: '12px 20px',
-            background: toast.type === 'success' ? '#ecfdf5' : toast.type === 'warning' ? '#fffbeb' : '#fef2f2',
-            color: toast.type === 'success' ? '#059669' : toast.type === 'warning' ? '#92400e' : '#dc2626',
-            border: `1px solid ${toast.type === 'success' ? '#a7f3d0' : toast.type === 'warning' ? '#fbbf24' : '#fecaca'}`,
-            borderRadius: '8px',
-            fontSize: '13px',
-            zIndex: 9999,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
-          }}
-        >
-          {toast.text}
-        </div>
-      )}
+      {toast && <Toast toast={toast} />}
     </div>
   );
 }

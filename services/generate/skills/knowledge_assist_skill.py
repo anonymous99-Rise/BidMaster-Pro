@@ -66,9 +66,9 @@ class KnowledgeAssistSkill(Skill):
     ) -> list[dict]:
         try:
             from services.routers.knowledge import search_knowledge_base
-            from services.database import async_session
+            from services.database import get_session_factory
 
-            async with async_session()() as db:
+            async with get_session_factory()() as db:
                 result = await search_knowledge_base(kb_id, query, top_k, db)
                 return result.get("results", [])
         except Exception as e:

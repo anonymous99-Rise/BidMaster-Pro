@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -30,17 +30,32 @@ from services.models import (
     KbCollectTask,
     KbCompany,
     KbCredit,
+    KbDocTemplate,
     KbEdge,
     KbFile,
     KbFinancial,
+    KbMatchResult,
     KbPersonnel,
     KbPersonnelCertificate,
+    KbRequirementEvidenceLink,
+    KbRule,
     KbScreeningCorrection,
     KbScreeningResult,
+    KbScoringItem,
+    KbTenderRequirement,
     HotspotItem,
 )
 
 logger = logging.getLogger(__name__)
+
+# 数值规则 key → (正则, 方向) — 规则库沉淀用 (与 screening._RULE_PATTERNS 同源)
+_RULE_PATTERNS_FOR_RULES = {
+    "registered_capital": (r"注册资本(?:不低于|不少于|达|至少|≥|>=){0,2}\s*(\d+(?:\.\d+)?)\s*万元?", 1),
+    "contract_amount": (r"(?:合同金额|类似业绩|单项合同)(?:不低于|不少于|达|至少|≥|>=){0,2}\s*(\d+(?:\.\d+)?)\s*万元?", 1),
+    "revenue": (r"营业收入(?:不低于|不少于|达|至少|≥|>=){0,2}\s*(\d+(?:\.\d+)?)\s*万元?", 1),
+    "debt_ratio": (r"资产负债率(?:不超过|≤|<=){0,2}\s*(\d+(?:\.\d+)?)\s*%", -1),
+    "personnel_years": (r"(?:从业|工作)?(?:年限|经验)(?:不低于|不少于|达|至少|≥|>=){0,2}\s*(\d+)\s*年", 1),
+}
 
 router = APIRouter(dependencies=[Depends(require_any_auth)])
 
@@ -110,6 +125,23 @@ async def _get_company(company_id: str, db: AsyncSession) -> KbCompany:
     return row
 
 
+async def _require_company_access(
+    company_id: str,
+    principal: AuthPrincipal,
+    db: AsyncSession,
+) -> KbCompany:
+    """多租户归属校验: 非 admin 的 Bearer 用户只能操作自己创建的工作空间。
+
+    API Key (桌面端单企业部署) 与 dev 主体不受限。
+    此前所有端点只按 URL company_id 查询, 任何凭证可跨公司读写甚至删库。
+    """
+    company = await _get_company(company_id, db)
+    if principal.user and not principal.is_admin:
+        if company.created_by and company.created_by != principal.user_id:
+            raise HTTPException(status_code=403, detail="无权访问该工作空间")
+    return company
+
+
 def _company_c(c: KbCompany) -> dict:
     return {
         "id": str(c.id), "name": c.name, "short_name": c.short_name,
@@ -123,6 +155,10 @@ def _company_c(c: KbCompany) -> dict:
 
 def _save_bytes(company_id: str, filename: str, data: bytes, rel_dir: str = "") -> Path:
     """落盘到 ./kb_files/{company_id}/{rel_dir}/{filename}, 重名加后缀。"""
+    # 防 rel_dir 携带盘符/绝对路径在 Windows 上整体替换基础路径 (ZIP 恶意条目)
+    if rel_dir:
+        if Path(rel_dir).is_absolute() or re.match(r"^[A-Za-z]:", rel_dir):
+            raise ValueError(f"非法的相对目录: {rel_dir}")
     target_dir = Path(KB_ROOT) / str(company_id)
     if rel_dir:
         target_dir = target_dir / rel_dir
@@ -196,8 +232,12 @@ async def create_company(
 
 
 @router.get("/companies/{company_id}")
-async def get_company(company_id: str, db: AsyncSession = Depends(get_db)):
-    return _company_c(await _get_company(company_id, db))
+async def get_company(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    return _company_c(await _require_company_access(company_id, principal, db))
 
 
 @router.patch("/companies/{company_id}")
@@ -205,8 +245,9 @@ async def update_company(
     company_id: str,
     payload: CompanyUpdate,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
-    c = await _get_company(company_id, db)
+    c = await _require_company_access(company_id, principal, db)
     for field in ("name", "short_name", "unified_social_code", "legal_person",
                   "industry_code", "region", "contact", "description"):
         val = getattr(payload, field, None)
@@ -217,12 +258,18 @@ async def update_company(
 
 
 @router.delete("/companies/{company_id}")
-async def delete_company(company_id: str, db: AsyncSession = Depends(get_db)):
-    c = await _get_company(company_id, db)
+async def delete_company(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    c = await _require_company_access(company_id, principal, db)
     # 级联清理: 先子后父 (FK 指向 kb_companies.id), 再删来源文件与磁盘
     for model in (
-        KbEdge, KbPersonnelCertificate, KbPersonnel, KbCertificate,
-        KbAchievement, KbFinancial, KbCredit, KbFile, KbBuildTask,
+        KbAnalysisReport, KbScreeningCorrection, KbScreeningResult,
+        KbCollectTask, KbEdge, KbPersonnelCertificate, KbPersonnel,
+        KbCertificate, KbAchievement, KbFinancial, KbCredit, KbFile,
+        KbBuildTask,
     ):
         await db.execute(delete(model).where(model.company_id == company_id))
     await db.delete(c)
@@ -246,8 +293,9 @@ async def list_cards(
     limit: int = 200,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     model = _CARD_MODELS.get(category)
     if not model:
         raise HTTPException(status_code=400, detail=f"未知子库: {category}")
@@ -303,9 +351,10 @@ async def get_graph(
     company_id: str,
     audit: str = "all",          # all/audited
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """公司资质全景图谱: 节点=实体卡片(按子库), 边=关系(kb_edges)。"""
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
 
     def _nid(t: str, i: str) -> str:
         return f"{t}:{i}"
@@ -367,9 +416,10 @@ async def upload_files(
     file: UploadFile = File(...),
     auto_build: bool = Form(True),
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """单文件上传 → 建 KbFile + 触发 W1 构建流水线。"""
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     content = await file.read()
     if len(content) > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail=f"文件超过 {MAX_FILE_BYTES // 1024 // 1024}MB")
@@ -408,9 +458,10 @@ async def upload_folder(
     file: UploadFile = File(...),           # .zip 整包
     auto_build: bool = Form(True),
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """ZIP 整包上传: 保留目录结构(Obsidian 式), 逐文件建 KbFile + 触发 W1。"""
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     content = await file.read()
     if len(content) > MAX_FILE_BYTES * 2:
         raise HTTPException(status_code=413, detail="ZIP 超过 100MB 上限")
@@ -421,10 +472,20 @@ async def upload_folder(
     )).scalars().all())
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            # ZIP bomb 防护: 解压总字节与条目数上限
+            total_uncompressed = sum(m.file_size for m in zf.infolist())
+            if total_uncompressed > MAX_FILE_BYTES * 20:
+                raise HTTPException(status_code=413, detail="ZIP 解压后总大小超过 1GB 上限")
+            if len(zf.namelist()) > 2000:
+                raise HTTPException(status_code=413, detail="ZIP 内文件数超过 2000 上限")
             for member in zf.namelist():
                 member_name = member.replace("\\", "/")
                 if member_name.startswith("/") or ".." in member_name.split("/"):
                     continue  # 防 zip slip
+                # 盘符绝对路径 (C:/evil/x.pdf) 在 Windows 上会整体替换基础路径 → 任意写
+                drive, _, rest = member_name.partition(":")
+                if rest or (drive and len(drive) == 1 and drive.isalpha()):
+                    continue
                 if member.endswith("/"):
                     continue
                 filename = Path(member_name).name
@@ -437,6 +498,7 @@ async def upload_folder(
                 sha = _sha256(data)
                 if sha in existing_shas:
                     continue  # 已入库去重
+                existing_shas.add(sha)  # 包内同内容多路径只收第一份, 防 uq 冲突整单回滚
                 parent = Path(member_name).parent
                 parent_rel = "" if str(parent) == "." else str(parent)
                 saved = _save_bytes(company_id, filename, data, rel_dir=parent_rel)
@@ -511,12 +573,17 @@ async def list_build_tasks(
 
 
 @router.post("/build-tasks/{task_id}/retry")
-async def retry_build_task(task_id: str, db: AsyncSession = Depends(get_db)):
+async def retry_build_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     task = (await db.execute(
         select(KbBuildTask).where(KbBuildTask.id == task_id)
     )).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="构建任务不存在")
+    await _require_company_access(str(task.company_id), principal, db)
     if task.status == "running":
         raise HTTPException(status_code=400, detail="任务正在运行中")
     if not (task.params.get("file_ids") or []):
@@ -527,10 +594,10 @@ async def retry_build_task(task_id: str, db: AsyncSession = Depends(get_db)):
     try:
         from services.celery_app import run_kb_pipeline
         run_kb_pipeline.delay(task_id)
-    except Exception as e:
+    except Exception:
         await db.execute(update(KbBuildTask).where(KbBuildTask.id == task_id).values(status="pending"))
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"投递失败: {e}")
+        raise HTTPException(status_code=502, detail="任务投递失败 (broker 不可达), 任务已重置为待投递")
     return {"success": True, "task_id": task_id}
 
 
@@ -560,7 +627,12 @@ async def list_review_queue(
 
 
 @router.post("/review-queue/{entity_type}/{card_id}/approve")
-async def approve_card(entity_type: str, card_id: str, db: AsyncSession = Depends(get_db)):
+async def approve_card(
+    entity_type: str,
+    card_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """人工确认卡片入池 (is_audited=true)。"""
     model = _CARD_MODELS.get(entity_type)
     if not model:
@@ -568,6 +640,7 @@ async def approve_card(entity_type: str, card_id: str, db: AsyncSession = Depend
     row = (await db.execute(select(model).where(model.id == card_id))).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="卡片不存在")
+    await _require_company_access(str(row.company_id), principal, db)
     row.is_audited = True
     await db.flush()
     # 人员证书无独立审核入口, 随所属人员一并入池
@@ -586,7 +659,12 @@ async def approve_card(entity_type: str, card_id: str, db: AsyncSession = Depend
 
 
 @router.post("/review-queue/{entity_type}/{card_id}/reject")
-async def reject_card(entity_type: str, card_id: str, db: AsyncSession = Depends(get_db)):
+async def reject_card(
+    entity_type: str,
+    card_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """拒掉这张卡片 (删除), 并清理关联的人员证书与关系边避免悬挂。"""
     model = _CARD_MODELS.get(entity_type)
     if not model:
@@ -594,6 +672,7 @@ async def reject_card(entity_type: str, card_id: str, db: AsyncSession = Depends
     row = (await db.execute(select(model).where(model.id == card_id))).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="卡片不存在")
+    await _require_company_access(str(row.company_id), principal, db)
     # 人员被拒: 一并删除其人员证书及边 (证书无独立审核入口, 不会自行入池)
     if entity_type == "personnel":
         pcert_ids = (await db.execute(select(KbPersonnelCertificate.id).where(
@@ -681,7 +760,7 @@ async def list_expiry_alerts(
     db: AsyncSession = Depends(get_db),
 ):
     """列出有效期 <=days 天 或已过期的证书/人员证书 (仅已入池)。"""
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()
     alerts = []
     for model, kind, name_of in (
         (KbCertificate, "certificate", lambda r: r.name),
@@ -721,8 +800,9 @@ async def list_files(
     parse_status: str = "",
     limit: int = 200,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     stmt = select(KbFile).where(KbFile.company_id == company_id)
     if parse_status:
         stmt = stmt.where(KbFile.parse_status == parse_status)
@@ -754,10 +834,11 @@ async def start_collect(
     company_id: str,
     payload: CollectCreate | None = None,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """手动触发公开采集: 按企业名搜中标公告 → 预填业绩人审队列。"""
     payload = payload or CollectCreate()
-    company = await _get_company(company_id, db)
+    company = await _require_company_access(company_id, principal, db)
     keyword = (payload.keyword or "").strip() or company.name
     task = KbCollectTask(
         company_id=company_id, status="pending", keyword=keyword,
@@ -778,7 +859,7 @@ async def start_collect(
         logger.warning(f"公开采集任务投递失败 (可稍后重试): {e}")
         await db.execute(update(KbCollectTask).where(
             KbCollectTask.id == task_id).values(
-            status="failed", error=f"投递失败: {e}"[:500]))
+            status="failed", error=f"投递失败: {type(e).__name__}"[:500]))
     await db.commit()
     return {"success": True, "task_id": task_id, "keyword": keyword}
 
@@ -806,12 +887,17 @@ async def list_collect_tasks(
 
 
 @router.post("/collect-tasks/{task_id}/retry")
-async def retry_collect_task(task_id: str, db: AsyncSession = Depends(get_db)):
+async def retry_collect_task(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     task = (await db.execute(
         select(KbCollectTask).where(KbCollectTask.id == task_id)
     )).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="采集任务不存在")
+    await _require_company_access(str(task.company_id), principal, db)
     if task.status == "running":
         raise HTTPException(status_code=400, detail="任务正在运行中")
     await db.execute(update(KbCollectTask).where(
@@ -820,12 +906,12 @@ async def retry_collect_task(task_id: str, db: AsyncSession = Depends(get_db)):
     try:
         from services.celery_app import run_kb_collect
         run_kb_collect.delay(task_id)
-    except Exception as e:
+    except Exception:
         await db.execute(update(KbCollectTask).where(
             KbCollectTask.id == task_id).values(
-            status="failed", error=f"投递失败: {e}"[:500]))
+            status="failed", error="投递失败 (broker 不可达)"[:500]))
         await db.commit()
-        raise HTTPException(status_code=500, detail=f"投递失败: {e}")
+        raise HTTPException(status_code=502, detail="任务投递失败 (broker 不可达), 任务已置为失败")
     return {"success": True, "task_id": task_id}
 
 
@@ -842,9 +928,10 @@ async def list_opportunities(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """商机分析: 按阶段列出该公司的备选库/分析库/投标库。"""
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     conditions = [HotspotItem.company_id == company_id]
     if stage:
         conditions.append(HotspotItem.stage == stage)
@@ -871,6 +958,7 @@ async def update_opportunity_stage(
     opportunity_id: str,
     body: OpportunityStageUpdate,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """更新单个商机的阶段 (candidate → analysis → tender)。"""
     if body.stage not in ("", "candidate", "analysis", "tender"):
@@ -880,6 +968,8 @@ async def update_opportunity_stage(
     )).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="商机不存在")
+    if row.company_id:
+        await _require_company_access(str(row.company_id), principal, db)
     row.stage = body.stage
     await db.commit()
     return {"success": True, "id": opportunity_id, "stage": row.stage}
@@ -890,12 +980,13 @@ async def add_opportunity_from_hotspot(
     company_id: str,
     body: dict,
     db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
 ):
     """从资讯热点落库为该公司的备选商机 (stage=candidate)。
 
     body: {hotspot_id: str, stage?: str}  —— 复制已聚合的 hotspot 到该公司名下。
     """
-    await _get_company(company_id, db)
+    await _require_company_access(company_id, principal, db)
     hotspot_id = (body or {}).get("hotspot_id", "")
     target_stage = (body or {}).get("stage", "candidate")
     if target_stage not in ("", "candidate", "analysis", "tender"):
@@ -997,7 +1088,12 @@ async def _load_kb_cards(db: AsyncSession, company_id: str) -> list[dict]:
 
 
 @router.post("/companies/{company_id}/screen")
-async def run_screening(company_id: str, body: ScreenRequest, db: AsyncSession = Depends(get_db)):
+async def run_screening(
+    company_id: str,
+    body: ScreenRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """对一组资格条件做初筛, 结果落库并返回三态+三大产物。"""
     from services.kb.screening import (
         screen_requirements, build_response_table, extract_redlines,
@@ -1006,16 +1102,13 @@ async def run_screening(company_id: str, body: ScreenRequest, db: AsyncSession =
     if not body.requirements:
         raise HTTPException(status_code=400, detail="requirements 不能为空")
 
-    company = (await db.execute(
-        select(KbCompany).where(KbCompany.id == company_id)
-    )).scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="公司不存在")
+    await _require_company_access(company_id, principal, db)
 
-    # 修正回流映射: 条款指纹 → 人工修正结论
+    # 修正回流映射: 条款指纹 → 人工修正结论 (按时间升序, 同条款多次修正取最新)
     corr_rows = (await db.execute(
         select(KbScreeningCorrection).where(
             KbScreeningCorrection.company_id == company_id)
+        .order_by(KbScreeningCorrection.created_at.asc())
     )).scalars().all()
     corrections = {c.fingerprint: c.corrected_verdict for c in corr_rows}
 
@@ -1062,6 +1155,62 @@ async def run_screening(company_id: str, body: ScreenRequest, db: AsyncSession =
         items=result["items"], redlines=redlines, response_table=response_table,
     )
     db.add(row)
+    await db.flush()
+
+    # 规则库沉淀 (设计第五章): 逐条款落 match_result + 条款入 tender_requirement + 规则命中统计
+    import uuid as _uuid_mod
+    rule_hits: dict[str, KbRule] = {}
+    for req, item in zip(body.requirements, result["items"]):
+        text = req.get("text") or item.get("text", "")
+        fp = str(_uuid_mod.uuid5(_uuid_mod.NAMESPACE_URL, text))[:32]
+        evidence = item.get("checks") or []
+        mr = KbMatchResult(
+            screening_id=str(row.id), fingerprint=fp,
+            status=item.get("verdict", "needs_review"),
+            reason=item.get("reason", ""),
+            evidence_items=evidence,
+            similarity_score=float(next(
+                (c.get("similarity", 0) for c in evidence if "similarity" in c), 0)),
+        )
+        db.add(mr)
+        # 证据链: 命中卡片 → requirement_evidence_link
+        card = item.get("card") or {}
+        if card.get("id"):
+            db.add(KbRequirementEvidenceLink(
+                requirement_id=fp, match_result_id="", card_type=card.get("category") or "",
+                card_id=card.get("id"), coverage_status=(
+                    "covered" if item.get("verdict") == "matched"
+                    else "partial" if item.get("verdict") == "needs_review" else "uncovered"),
+            ))
+        tr = KbTenderRequirement(
+            company_id=company_id, opportunity_id=body.opportunity_id or "",
+            req_type="qualification", title=text[:500], content=text[:5000],
+            mandatory=True, risk_level="high" if item.get("verdict") == "failed" else "medium",
+            fingerprint=fp,
+        )
+        db.add(tr)
+        # 命中的数值规则 hit_count +1 (越用越准统计)
+        rule_key = item.get("rule", "")
+        if rule_key:
+            r = rule_hits.get(rule_key)
+            if r is None:
+                r = (await db.execute(
+                    select(KbRule).where(
+                        KbRule.rule_type == "numeric", KbRule.name == f"数值规则:{rule_key}",
+                        KbRule.enabled == True,  # noqa: E712
+                    ).limit(1)
+                )).scalar_one_or_none()
+                if r is None:
+                    pat, direction = _RULE_PATTERNS_FOR_RULES.get(rule_key, ("", 1))
+                    r = KbRule(rule_type="numeric", name=f"数值规则:{rule_key}",
+                               pattern=pat,
+                               operator=">=" if direction > 0 else "<=",
+                               severity="critical", source="built_in")
+                    db.add(r)
+                rule_hits[rule_key] = r
+            r.hit_count = (r.hit_count or 0) + 1
+            r.last_hit_at = datetime.now(timezone.utc)
+
     await db.commit()
     return {"success": True, "screening_id": str(row.id), "overall": result["overall"],
             "summary": result["stats"], "items": result["items"],
@@ -1069,9 +1218,14 @@ async def run_screening(company_id: str, body: ScreenRequest, db: AsyncSession =
 
 
 @router.get("/companies/{company_id}/screenings")
-async def list_screenings(company_id: str, db: AsyncSession = Depends(get_db),
-                          opportunity_id: str = Query("")):
+async def list_screenings(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+    opportunity_id: str = Query(""),
+):
     """历史初筛结果列表。"""
+    await _require_company_access(company_id, principal, db)
     q = select(KbScreeningResult).where(KbScreeningResult.company_id == company_id)
     if opportunity_id:
         q = q.where(KbScreeningResult.opportunity_id == opportunity_id)
@@ -1084,13 +1238,18 @@ async def list_screenings(company_id: str, db: AsyncSession = Depends(get_db),
 
 
 @router.get("/screenings/{screening_id}")
-async def get_screening(screening_id: str, db: AsyncSession = Depends(get_db)):
+async def get_screening(
+    screening_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """单条初筛结果详情 (含逐条结论/红线/响应表)。"""
     r = (await db.execute(
         select(KbScreeningResult).where(KbScreeningResult.id == screening_id)
     )).scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="初筛结果不存在")
+    await _require_company_access(str(r.company_id), principal, db)
     return {"id": str(r.id), "company_id": r.company_id,
             "opportunity_id": r.opportunity_id or "", "overall": r.overall,
             "summary": r.summary, "items": r.items, "redlines": r.redlines,
@@ -1107,11 +1266,14 @@ class CorrectionRequest(BaseModel):
 
 
 @router.post("/screenings/{screening_id}/correct")
-async def correct_screening(screening_id: str, body: CorrectionRequest,
-                            db: AsyncSession = Depends(get_db)):
+async def correct_screening(
+    screening_id: str,
+    body: CorrectionRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """人工改判初筛结论 → 落修正表回流 (产物指纹按条款文本)。"""
     import uuid as _uuid
-    from services.kb.screening import _RULE_PATTERNS  # noqa: F401
     if body.corrected_verdict not in ("matched", "failed"):
         raise HTTPException(status_code=400, detail="corrected_verdict 只能是 matched/failed")
     r = (await db.execute(
@@ -1119,6 +1281,7 @@ async def correct_screening(screening_id: str, body: CorrectionRequest,
     )).scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="初筛结果不存在")
+    await _require_company_access(str(r.company_id), principal, db)
     fp = str(_uuid.uuid5(_uuid.NAMESPACE_URL, body.clause_text))[:32]
     corr = KbScreeningCorrection(
         company_id=r.company_id, fingerprint=fp,
@@ -1127,8 +1290,116 @@ async def correct_screening(screening_id: str, body: CorrectionRequest,
         corrected_verdict=body.corrected_verdict, reason=body.reason,
     )
     db.add(corr)
+    # 错例沉淀 (设计第五章 rule.source=learned): 改判过一次的条款记成 learned 规则,
+    # 下次同条款走 corrections 映射, 这里补一条可查的沉淀记录 + 关联 match_result 人工确认
+    learned = (await db.execute(
+        select(KbRule).where(
+            KbRule.company_id == r.company_id,
+            KbRule.name == f"错例沉淀:{fp}",
+        ).limit(1)
+    )).scalar_one_or_none()
+    if learned:
+        learned.hit_count = (learned.hit_count or 0) + 1
+    else:
+        db.add(KbRule(
+            company_id=r.company_id, rule_type="custom",
+            name=f"错例沉淀:{fp}",
+            pattern=body.clause_text[:2000],
+            operator="correction", severity="major",
+            source="learned", hit_count=1,
+        ))
+    await db.execute(update(KbMatchResult).where(
+        KbMatchResult.screening_id == screening_id,
+        KbMatchResult.fingerprint == fp,
+    ).values(confirmed_status=body.corrected_verdict))
     await db.commit()
     return {"success": True, "fingerprint": fp}
+
+
+# ================= 规则库管理 (KB-M6 沉淀层) =================
+
+class RuleCreate(BaseModel):
+    rule_type: str                      # numeric/redline/synonym/custom
+    name: str
+    pattern: str = ""
+    operator: str = ""
+    threshold: float | None = None
+    unit: str = ""
+    severity: str = "major"
+    enabled: bool = True
+
+
+class RuleUpdate(BaseModel):
+    name: str | None = None
+    pattern: str | None = None
+    operator: str | None = None
+    threshold: float | None = None
+    unit: str | None = None
+    severity: str | None = None
+    enabled: bool | None = None
+
+
+@router.get("/rules")
+async def list_rules(
+    company_id: str = Query("", description="空=含全局"),
+    rule_type: str = Query("", description="numeric/redline/synonym/custom"),
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    q = select(KbRule).where(or_(KbRule.company_id == company_id, KbRule.company_id == ""))
+    if rule_type:
+        q = q.where(KbRule.rule_type == rule_type)
+    q = q.order_by(KbRule.source, KbRule.hit_count.desc()).limit(500)
+    rows = (await db.execute(q)).scalars().all()
+    return {"rules": [
+        {"id": str(r.id), "company_id": r.company_id, "rule_type": r.rule_type,
+         "name": r.name, "pattern": r.pattern, "operator": r.operator,
+         "threshold": r.threshold, "unit": r.unit, "severity": r.severity,
+         "enabled": r.enabled, "source": r.source, "hit_count": r.hit_count,
+         "last_hit_at": _iso(r.last_hit_at), "created_at": _iso(r.created_at)}
+        for r in rows
+    ]}
+
+
+@router.post("/rules")
+async def create_rule(payload: RuleCreate, db: AsyncSession = Depends(get_db),
+                      principal: AuthPrincipal = Depends(require_any_auth)):
+    if payload.rule_type not in ("numeric", "redline", "synonym", "custom"):
+        raise HTTPException(status_code=400, detail="rule_type 无效")
+    row = KbRule(rule_type=payload.rule_type, name=payload.name,
+                 pattern=payload.pattern, operator=payload.operator,
+                 threshold=payload.threshold, unit=payload.unit,
+                 severity=payload.severity, enabled=payload.enabled,
+                 source="custom")
+    db.add(row)
+    await db.commit()
+    return {"success": True, "id": str(row.id)}
+
+
+@router.patch("/rules/{rule_id}")
+async def update_rule(rule_id: str, payload: RuleUpdate,
+                      db: AsyncSession = Depends(get_db),
+                      principal: AuthPrincipal = Depends(require_any_auth)):
+    row = (await db.execute(select(KbRule).where(KbRule.id == rule_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    for field in ("name", "pattern", "operator", "threshold", "unit", "severity", "enabled"):
+        val = getattr(payload, field, None)
+        if val is not None:
+            setattr(row, field, val)
+    await db.commit()
+    return {"success": True, "id": rule_id}
+
+
+@router.delete("/rules/{rule_id}")
+async def delete_rule(rule_id: str, db: AsyncSession = Depends(get_db),
+                      principal: AuthPrincipal = Depends(require_any_auth)):
+    row = (await db.execute(select(KbRule).where(KbRule.id == rule_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    await db.delete(row)
+    await db.commit()
+    return {"success": True}
 
 
 # ================================================================
@@ -1143,20 +1414,20 @@ class AnalyzeRequest(BaseModel):
 
 
 @router.post("/companies/{company_id}/analyze")
-async def run_deep_analysis(company_id: str, body: AnalyzeRequest,
-                            db: AsyncSession = Depends(get_db)):
+async def run_deep_analysis(
+    company_id: str,
+    body: AnalyzeRequest,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """同步执行深度分析 (纯规则秒级): 团队优化器+业绩算分 → 报告行落库。
 
     数据源: 该公司 personnel/personnel_certificates/achievements 已人审卡。
     """
     from services.kb.scoring import optimize_team, score_performance
-    from datetime import datetime as _dt
+    from services.models import _utcnow
 
-    company = (await db.execute(
-        select(KbCompany).where(KbCompany.id == company_id)
-    )).scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="公司不存在")
+    await _require_company_access(company_id, principal, db)
 
     personnel_rows = (await db.execute(
         select(KbPersonnel).where(
@@ -1206,7 +1477,7 @@ async def run_deep_analysis(company_id: str, body: AnalyzeRequest,
             "suggestion": suggestion,
             "gaps": team.get("gaps", []) + ([perf.get("gap")] if perf.get("gap") else []),
         },
-        started_at=_dt.utcnow(), finished_at=_dt.utcnow(),
+        started_at=_utcnow(), finished_at=_utcnow(),
     )
     db.add(report)
     await db.commit()
@@ -1215,8 +1486,13 @@ async def run_deep_analysis(company_id: str, body: AnalyzeRequest,
 
 
 @router.get("/companies/{company_id}/analysis-reports")
-async def list_analysis_reports(company_id: str, db: AsyncSession = Depends(get_db)):
+async def list_analysis_reports(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """历史分析报告列表。"""
+    await _require_company_access(company_id, principal, db)
     rows = (await db.execute(
         select(KbAnalysisReport)
         .where(KbAnalysisReport.company_id == company_id)
@@ -1230,13 +1506,18 @@ async def list_analysis_reports(company_id: str, db: AsyncSession = Depends(get_
 
 
 @router.get("/analysis-reports/{report_id}")
-async def get_analysis_report(report_id: str, db: AsyncSession = Depends(get_db)):
+async def get_analysis_report(
+    report_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """单条分析报告详情。"""
     r = (await db.execute(
         select(KbAnalysisReport).where(KbAnalysisReport.id == report_id)
     )).scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="报告不存在")
+    await _require_company_access(str(r.company_id), principal, db)
     return {"id": str(r.id), "company_id": r.company_id,
             "opportunity_id": r.opportunity_id or "", "status": r.status,
             "team": r.team, "performance": r.performance,
@@ -1247,6 +1528,78 @@ async def get_analysis_report(report_id: str, db: AsyncSession = Depends(get_db)
 # ================================================================
 # 商务文函自动化 (KB-M7 第三关落点): 响应表/承诺函/声明函 docx 下载
 # ================================================================
+
+def _docx_analysis_report(company: KbCompany, report: KbAnalysisReport) -> bytes:
+    """评分报告 docx (KB-M7 得分关产物): 团队/业绩/汇总/缺口, 按 industry_code 选模板。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    # 服务类(12 IT/软件) 用"服务类评分报告"标题, 其余按工程货物类
+    kind = "服务类" if (company.industry_code or "12") == "12" else "工程货物类"
+    doc.add_heading(f"{company.name} — {kind}投标评分报告", level=1)
+    summary = report.scoring_summary or {}
+    team = report.team or {}
+    perf = report.performance or {}
+
+    doc.add_heading("一、结论", level=2)
+    doc.add_paragraph(
+        f"总分: {summary.get('total', 0)} / 20 分 (团队 {summary.get('team_score', 0)}"
+        f"/{summary.get('team_cap', 15)} + 业绩 {summary.get('performance_score', 0)}"
+        f"/{summary.get('performance_cap', 5)})\n"
+        f"投标建议: {summary.get('suggestion', '—')}")
+
+    doc.add_heading("二、团队配置得分", level=2)
+    roster = team.get("roster") or {}
+    detail = team.get("score_detail") or {}
+    doc.add_paragraph(
+        f"项目负责人: {(roster.get('project_lead') or {}).get('name') or '—'}"
+        f" ({detail.get('lead', 0)} 分)\n"
+        f"技术负责人: {(roster.get('tech_lead') or {}).get('name') or '—'}"
+        f" ({detail.get('tech_lead', 0)} 分)\n"
+        f"团队成员: {len(roster.get('members') or [])} 人 ({detail.get('members', 0)} 分)")
+
+    doc.add_heading("三、业绩得分", level=2)
+    doc.add_paragraph(
+        f"近三年类似业绩: {perf.get('count', 0)} 项, 得分 {perf.get('score', 0)}"
+        f"/{perf.get('cap', 5)} 分")
+
+    gaps = summary.get("gaps") or []
+    doc.add_heading("四、缺口与提升建议", level=2)
+    if gaps:
+        for i, g in enumerate(gaps, 1):
+            doc.add_paragraph(f"{i}. {g}")
+    else:
+        doc.add_paragraph("无缺口, 配置已达标。")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/analysis-reports/{report_id}/docx")
+async def download_analysis_report(
+    report_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    """下载评分报告 docx (M7 产物; report_path 为空则即时生成, 不落盘)。"""
+    from fastapi.responses import Response
+    r = (await db.execute(
+        select(KbAnalysisReport).where(KbAnalysisReport.id == report_id)
+    )).scalar_one_or_none()
+    if not r:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    await _require_company_access(str(r.company_id), principal, db)
+    company = await _get_company(str(r.company_id), db)
+    data = _docx_analysis_report(company, r)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition":
+                 f"attachment; filename=analysis_report_{report_id[:8]}.docx"},
+    )
+
 
 def _docx_response_table(screening: KbScreeningResult, company_name: str) -> bytes:
     """产物③落地: 商务要求响应表 docx。"""
@@ -1328,7 +1681,11 @@ def _docx_sme_declaration(company: KbCompany) -> bytes:
 
 
 @router.get("/screenings/{screening_id}/docs/response-table")
-async def download_response_table(screening_id: str, db: AsyncSession = Depends(get_db)):
+async def download_response_table(
+    screening_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """下载商务要求响应表 docx。"""
     from fastapi.responses import Response
     r = (await db.execute(
@@ -1336,6 +1693,7 @@ async def download_response_table(screening_id: str, db: AsyncSession = Depends(
     )).scalar_one_or_none()
     if not r:
         raise HTTPException(status_code=404, detail="初筛结果不存在")
+    await _require_company_access(str(r.company_id), principal, db)
     company = (await db.execute(
         select(KbCompany).where(KbCompany.id == r.company_id)
     )).scalar_one_or_none()
@@ -1349,15 +1707,15 @@ async def download_response_table(screening_id: str, db: AsyncSession = Depends(
 
 
 @router.get("/companies/{company_id}/docs/commitment-letter")
-async def download_commitment_letter(company_id: str, db: AsyncSession = Depends(get_db),
-                                     screening_id: str = Query("")):
+async def download_commitment_letter(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+    screening_id: str = Query(""),
+):
     """下载资格承诺函 docx (有初筛结果按其条款, 否则取最近一次)。"""
     from fastapi.responses import Response
-    company = (await db.execute(
-        select(KbCompany).where(KbCompany.id == company_id)
-    )).scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="公司不存在")
+    company = await _require_company_access(company_id, principal, db)
     requirements: list[dict] = []
     if screening_id:
         r = (await db.execute(
@@ -1381,17 +1739,187 @@ async def download_commitment_letter(company_id: str, db: AsyncSession = Depends
 
 
 @router.get("/companies/{company_id}/docs/sme-declaration")
-async def download_sme_declaration(company_id: str, db: AsyncSession = Depends(get_db)):
+async def download_sme_declaration(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
     """下载中小企业声明函 docx。"""
     from fastapi.responses import Response
-    company = (await db.execute(
-        select(KbCompany).where(KbCompany.id == company_id)
-    )).scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="公司不存在")
+    company = await _require_company_access(company_id, principal, db)
     data = _docx_sme_declaration(company)
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": "attachment; filename=sme_declaration.docx"},
+    )
+
+# ── 商务文函补齐 3 类 (设计第十章): 授权委托书 / 业绩证明汇编 / 人员配备表 ──
+
+def _docx_authorization_letter(company: KbCompany) -> bytes:
+    """法定代表人授权委托书 docx (占位待填被授权人信息)。"""
+    from docx import Document
+    from docx.shared import Pt
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("法定代表人授权委托书")
+    run.font.size = Pt(18)
+    run.font.bold = True
+    doc.add_paragraph(
+        f"本授权委托书声明: 我 {company.legal_person or '____________'} 系 "
+        f"{company.name} 的法定代表人, 现授权 "
+        f"____________ (被授权人姓名) 职务 ____________ , 身份证号 ____________________ , "
+        "为我方代理人, 以我方名义参加本项目的投标活动。")
+    doc.add_paragraph(
+        "代理人在开标、评标、澄清、合同谈判及签约过程中所签署的一切文件和处理的一切有关事宜, "
+        "我方均予以承认, 并承担相应的法律责任。")
+    doc.add_paragraph("本授权委托书自签发之日起生效, 至本项目投标有效期结束之日止。")
+    doc.add_paragraph("代理人无转委托权。")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(f"\n投标人(盖章): {company.name}\n法定代表人(签字): ____________\n日期: ____年____月____日")
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _docx_achievement_summary(company: KbCompany, achievements: list) -> bytes:
+    """业绩证明汇编 docx: 逐项列出已入池业绩(含金额/业主/中标结果), 供投标附证。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading(f"{company.name} — 业绩证明汇编", level=1)
+    if not achievements:
+        doc.add_paragraph("知识库暂无已入池业绩记录。")
+    else:
+        table = doc.add_table(rows=1, cols=6)
+        table.style = "Table Grid"
+        hdr = table.rows[0].cells
+        for i, h in enumerate(["序号", "项目名称", "业主单位", "合同金额(万元)", "签订日期", "中标结果"]):
+            hdr[i].text = h
+            for p in hdr[i].paragraphs:
+                for r in p.runs:
+                    r.font.bold = True
+                    r.font.size = Pt(10.5)
+        for i, a in enumerate(achievements, 1):
+            cells = table.add_row().cells
+            cells[0].text = str(i)
+            cells[1].text = a.project_name or ""
+            cells[2].text = a.client_name or ""
+            cells[3].text = f"{a.contract_amount or 0:g}" if a.contract_amount else "—"
+            cells[4].text = a.sign_date or a.announce_date or "—"
+            cells[5].text = "中标" if a.bid_result == "win" else "未中标"
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _docx_personnel_table(company: KbCompany, personnel: list, certs_by_person: dict) -> bytes:
+    """人员配备表 docx: 拟派人员 + 证书清单 (拟派岗位留待填)。"""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading(f"{company.name} — 人员配备表", level=1)
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    for i, h in enumerate(["序号", "姓名", "拟派岗位", "职称/职务", "相关证书"]):
+        hdr[i].text = h
+        for p in hdr[i].paragraphs:
+            for r in p.runs:
+                r.font.bold = True
+                r.font.size = Pt(10.5)
+    for i, person in enumerate(personnel, 1):
+        certs = certs_by_person.get(str(person.id), [])
+        cells = table.add_row().cells
+        cells[0].text = str(i)
+        cells[1].text = person.name or ""
+        cells[2].text = person.role or "____________"
+        cells[3].text = person.title or "—"
+        cells[4].text = "; ".join(
+            f"{c.cert_type or ''}{('(' + c.level + ')') if c.level else ''}"
+            for c in certs if c.cert_type) or "—"
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/companies/{company_id}/docs/authorization-letter")
+async def download_authorization_letter(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    """下载法定代表人授权委托书 docx。"""
+    from fastapi.responses import Response
+    company = await _require_company_access(company_id, principal, db)
+    data = _docx_authorization_letter(company)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=authorization_letter.docx"},
+    )
+
+
+@router.get("/companies/{company_id}/docs/achievement-summary")
+async def download_achievement_summary(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+    only_win: bool = Query(False, description="true=仅中标业绩"),
+):
+    """下载业绩证明汇编 docx (已入池业绩逐项列表)。"""
+    from fastapi.responses import Response
+    await _require_company_access(company_id, principal, db)
+    stmt = select(KbAchievement).where(
+        KbAchievement.company_id == company_id,
+        KbAchievement.is_audited == True,  # noqa: E712
+    )
+    if only_win:
+        stmt = stmt.where(KbAchievement.bid_result == "win")
+    rows = (await db.execute(
+        stmt.order_by(KbAchievement.sign_date.desc()).limit(100)
+    )).scalars().all()
+    data = _docx_achievement_summary(await _get_company(company_id, db), rows)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=achievement_summary.docx"},
+    )
+
+
+@router.get("/companies/{company_id}/docs/personnel-table")
+async def download_personnel_table(
+    company_id: str,
+    db: AsyncSession = Depends(get_db),
+    principal: AuthPrincipal = Depends(require_any_auth),
+):
+    """下载人员配备表 docx (已入池人员+证书清单)。"""
+    from fastapi.responses import Response
+    await _require_company_access(company_id, principal, db)
+    personnel = (await db.execute(
+        select(KbPersonnel).where(
+            KbPersonnel.company_id == company_id,
+            KbPersonnel.is_audited == True,  # noqa: E712
+        ).order_by(KbPersonnel.created_at)
+    )).scalars().all()
+    certs = (await db.execute(
+        select(KbPersonnelCertificate).where(
+            KbPersonnelCertificate.company_id == company_id,
+            KbPersonnelCertificate.is_audited == True,  # noqa: E712
+        )
+    )).scalars().all()
+    certs_by_person: dict = {}
+    for c in certs:
+        certs_by_person.setdefault(str(c.personnel_id), []).append(c)
+    data = _docx_personnel_table(await _get_company(company_id, db), personnel, certs_by_person)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=personnel_table.docx"},
     )

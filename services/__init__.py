@@ -1,4 +1,4 @@
-from services.database import get_db, async_session, get_engine
+from services.database import get_db, get_session_factory, get_engine
 from services.models import (
     Base,
     User,
@@ -18,7 +18,7 @@ from services.models import (
 __all__ = [
     "Base",
     "get_engine",
-    "async_session",
+    "get_session_factory",
     "get_db",
     "User",
     "Project",

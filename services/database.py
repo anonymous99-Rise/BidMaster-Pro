@@ -33,7 +33,7 @@ def get_engine():
     return _engine
 
 
-def async_session() -> async_sessionmaker[AsyncSession]:
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
     global _async_session_factory
     if _async_session_factory is None:
         _async_session_factory = async_sessionmaker(
@@ -47,7 +47,7 @@ def async_session() -> async_sessionmaker[AsyncSession]:
 async def get_db() -> AsyncSession:
     if not _db_ready:
         raise HTTPException(status_code=503, detail="数据库暂不可用，请检查数据库服务是否已启动")
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as session:
         try:
             yield session
@@ -88,12 +88,29 @@ async def init_db():
         engine = get_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # 幂等补齐旧表新增列 (PostgreSQL / MySQL 均支持 ADD COLUMN IF NOT EXISTS)
+            # 幂等补齐旧表新增列:
+            # - PG 支持 ADD COLUMN IF NOT EXISTS, 一条 DDL 搞定
+            # - MySQL 8 不支持该语法, 直接执行会 1064 报错 → 先查 information_schema
+            #   再逐列 ALTER (逐列包异常, 列已存在时静默跳过)
+            is_mysql = engine.dialect.name == "mysql"
             for table, cols in _SCHEMA_EXTRA_COLUMNS.items():
                 for col_name, col_type in cols:
-                    ddl = f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}'
                     try:
-                        await conn.execute(text(ddl))
+                        if is_mysql:
+                            exists = await conn.execute(text(
+                                "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                                "WHERE TABLE_SCHEMA = DATABASE() "
+                                "AND TABLE_NAME = :t AND COLUMN_NAME = :c"
+                            ), {"t": table, "c": col_name})
+                            if exists.scalar() > 0:
+                                continue
+                            await conn.execute(text(
+                                f'ALTER TABLE {table} ADD COLUMN {col_name} {col_type}'
+                            ))
+                        else:
+                            await conn.execute(text(
+                                f'ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_name} {col_type}'
+                            ))
                     except Exception as e:
                         logger.warning(f"补充列 {table}.{col_name} 失败 (忽略): {e}")
         _db_ready = True

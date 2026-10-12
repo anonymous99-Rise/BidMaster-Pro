@@ -38,9 +38,9 @@ async def get_task_status(task_id: str):
 
 
 async def _do_generate_outline(project_id: str, mode: str):
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         try:
             t0 = time.monotonic()
@@ -209,9 +209,9 @@ async def generate_outline(
 
 
 async def _do_generate_structure(project_id: str, structure_type: str):
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         try:
             result = await db.execute(select(Project).where(Project.id == project_id))
@@ -265,9 +265,9 @@ async def _do_generate_structure(project_id: str, structure_type: str):
 
 
 async def _do_score_coverage(project_id: str):
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         try:
             result = await db.execute(select(Project).where(Project.id == project_id))
@@ -316,9 +316,9 @@ async def _do_score_coverage(project_id: str):
 
 
 async def _do_mandatory_extract(project_id: str):
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         try:
             result = await db.execute(select(Project).where(Project.id == project_id))
@@ -709,8 +709,8 @@ async def stream_generate_chapter(
     chapter_id: str,
     mode: str = "A",
 ):
-    from services.database import async_session as _async_session
-    db = _async_session()()
+    from services.database import get_session_factory as _session_factory
+    db = _session_factory()()
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
@@ -898,8 +898,8 @@ async def stream_generate_chapter(
             full_content = _post_process_stream_content(full_content, chapter_title)
 
             # Create a DB session for persistence ( the generator outlives the DI session)
-            from services.database import async_session
-            session_factory = async_session()
+            from services.database import get_session_factory
+            session_factory = get_session_factory()
             async with session_factory() as persist_db:
                 is_uuid = bool(chapter_id) and len(chapter_id) >= 32 and '-' in chapter_id
                 chapter_record = None
@@ -990,8 +990,8 @@ async def stream_generate_all_chapters(
     project_id: str,
     mode: str = "A",
 ):
-    from services.database import async_session as _async_session
-    db = _async_session()()
+    from services.database import get_session_factory as _session_factory
+    db = _session_factory()()
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
@@ -1198,8 +1198,8 @@ async def stream_generate_all_chapters(
             logger.warning(f"[批量生成] 评分覆盖检查失败: {e}")
 
         try:
-            from services.database import async_session
-            session_factory = async_session()
+            from services.database import get_session_factory
+            session_factory = get_session_factory()
             async with session_factory() as persist_db:
                 proj_result = await persist_db.execute(
                     select(Project).where(Project.id == project_id)

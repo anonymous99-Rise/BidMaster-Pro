@@ -415,9 +415,9 @@ async def full_check(project_id: str, db: AsyncSession = Depends(get_db)):
 
 async def _do_full_check(project_id: str):
     """Background worker: run 15 check skills in parallel and persist results."""
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         try:
             project, tender_text, bid_text = await _get_tender_and_bid_text(project_id, db)
@@ -842,9 +842,9 @@ async def _build_check_params(
 
 async def _do_single_check(project_id: str, check_type: str):
     """Background worker: run a single check (or selfcheck) and persist results."""
-    from services.database import async_session
+    from services.database import get_session_factory
 
-    session_factory = async_session()
+    session_factory = get_session_factory()
     async with session_factory() as db:
         project, tender_text, bid_text = await _get_tender_and_bid_text(project_id, db)
 
@@ -1044,8 +1044,8 @@ async def upload_and_check(
                 elif ct == "aiTextCheck":
                     params = {"bid_text": bid_text}
                 # Each skill gets its own session to avoid concurrent access
-                from services.database import async_session
-                session_factory = async_session()
+                from services.database import get_session_factory
+                session_factory = get_session_factory()
                 async with session_factory() as skill_db:
                     ctx = SkillContext(project_id="", db=skill_db, llm=gateway, parameters=params)
                     result = await skill.safe_execute(ctx)

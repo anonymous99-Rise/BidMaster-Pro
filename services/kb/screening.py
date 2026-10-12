@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional
 
 # ── 数值规则 (5 类) ──────────────────────────────────────────────
@@ -53,7 +53,9 @@ _TOKEN_RE = re.compile(r"[一-鿿A-Za-z0-9]{2,}")
 
 
 def _tokens(text: str) -> set[str]:
-    return set(_TOKEN_RE.findall(text or ""))
+    # 去空格后分词: 条款与卡片名空格风格常不一致 ("ISO9001质量管理体系" vs "ISO9001 质量管理体系"),
+    # 保留空格会导致 token 不等 → 名称核验 critical fail 直接误判废标
+    return set(_TOKEN_RE.findall(re.sub(r"\s+", "", text or "")))
 
 
 def classify_clause(text: str) -> str:
@@ -77,20 +79,21 @@ def extract_numeric(text: str) -> Optional[dict]:
 
 
 def _normalize_name(text: str) -> str:
-    """同义词归一: 返回规范名 (未命中原样返回)。"""
-    low = text or ""
+    """同义词归一: 返回规范名 (未命中原样返回)。空格差异先抹平。"""
+    low = re.sub(r"\s+", "", text or "")
     for canonical, syns in _MATCH_SYNONYMS.items():
-        if canonical in low or any(s in low for s in syns):
+        if canonical in low or any(s.replace(" ", "") in low for s in syns):
             return canonical
     return low
 
 
 def _synonym_of(text: str, target: str) -> bool:
-    """判断条款文本是否属于 target 的同义簇。"""
-    if target in text:
+    """判断条款文本是否属于 target 的同义簇 (忽略空格差异)。"""
+    text_c, target_c = re.sub(r"\s+", "", text or ""), re.sub(r"\s+", "", target or "")
+    if target_c in text_c:
         return True
     for s in _MATCH_SYNONYMS.get(target, []):
-        if s in text:
+        if s.replace(" ", "") in text_c:
             return True
     return False
 
@@ -144,7 +147,7 @@ def verify_evidence(req_text: str, card: dict) -> dict:
         checks.append({"field": "expiry_date", "result": "unknown", "critical": True})
     else:
         try:
-            expired = str(expiry)[:10] < datetime.utcnow().strftime("%Y-%m-%d")
+            expired = str(expiry)[:10] < datetime.now(timezone.utc).strftime("%Y-%m-%d")
             checks.append({"field": "expiry_date",
                            "result": "fail" if expired else "pass", "critical": True})
         except (ValueError, TypeError):

@@ -1031,6 +1031,14 @@ export const kbApi = {
     `/kb/companies/${companyId}/docs/commitment-letter${screeningId ? `?screening_id=${screeningId}` : ''}`,
   downloadSmeDeclaration: (companyId: string) =>
     `/kb/companies/${companyId}/docs/sme-declaration`,
+  downloadAuthorizationLetter: (companyId: string) =>
+    `/kb/companies/${companyId}/docs/authorization-letter`,
+  downloadAchievementSummary: (companyId: string, onlyWin = false) =>
+    `/kb/companies/${companyId}/docs/achievement-summary${onlyWin ? '?only_win=true' : ''}`,
+  downloadPersonnelTable: (companyId: string) =>
+    `/kb/companies/${companyId}/docs/personnel-table`,
+  downloadAnalysisReportDocx: (reportId: string) =>
+    `/kb/analysis-reports/${reportId}/docx`,
 
   // ── 深度分析 (KB-M7) ──
   runAnalysis: (companyId: string, data: {

@@ -49,6 +49,10 @@ class Settings(BaseSettings):
 
     tender_text_max_chars: int = 32000
 
+    # 政采公告源(Epoint)部分内网站点用自签证书, 默认跳过校验;
+    # 公网部署建议 BMP_EPOINT_VERIFY_TLS=true 收紧
+    epoint_verify_tls: bool = False
+
     model_config = {"env_file": ".env", "env_prefix": "BMP_", "extra": "ignore"}
 
     def get_database_url(self) -> str:

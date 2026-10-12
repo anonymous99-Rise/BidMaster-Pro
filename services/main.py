@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
                 os.environ[_k] = _v
     from services.skill_bootstrap import register_builtin_skills
     from core.task_manager import TaskManager
-    from services.database import async_session
+    from services.database import get_session_factory
     register_builtin_skills()
     await init_db()
 
@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
         from sqlalchemy import select
         from services.models import LLMProviderConfig
         from services.llm_factory import set_llm_gateway_from_provider
-        async with async_session()() as _ldb:
+        async with get_session_factory()() as _ldb:
             _row = (await _ldb.execute(
                 select(LLMProviderConfig)
                 .where(LLMProviderConfig.enabled == True, LLMProviderConfig.is_default == True)
@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     # 同步预置数据源 (YAML -> DB),仅做幂等写入,不抛错
     try:
         from services.news.source_registry import sync_sources_to_db
-        async with async_session()() as _sdb:
+        async with get_session_factory()() as _sdb:
             synced = await sync_sources_to_db(_sdb)
             await _sdb.commit()
             if synced:
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     # 证书类型字典种子 (幂等, 内置 IT 集成建议稿)
     try:
         from services.kb.cert_types import seed_cert_types
-        async with async_session()() as _kdb:
+        async with get_session_factory()() as _kdb:
             added = await seed_cert_types(_kdb)
             await _kdb.commit()
     except Exception as _e:

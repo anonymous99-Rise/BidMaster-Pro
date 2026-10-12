@@ -13,7 +13,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import feedparser
 
@@ -90,14 +90,15 @@ class RSSFetcher(BaseFetcher):
 
         feed = feedparser.parse(resp.content)
         items: List[NewsItem] = []
-        cutoff = datetime.now() - timedelta(hours=self.max_age_hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=self.max_age_hours)
 
         for entry in feed.entries[: self.max_items]:
             published = entry.get("published_parsed")
             if published:
-                pub_time = datetime(*published[:6])
+                # feedparser published_parsed 是 UTC struct_time
+                pub_time = datetime(*published[:6], tzinfo=timezone.utc)
             else:
-                pub_time = datetime.now()
+                pub_time = datetime.now(timezone.utc)
 
             if pub_time < cutoff:
                 continue
@@ -220,7 +221,7 @@ class APIFetcher(BaseFetcher):
 
         data = resp.json()
         items: List[NewsItem] = []
-        cutoff = datetime.now() - timedelta(hours=168)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=168)
 
         # 排除自身仓库 (避免 GitHub 自我命中)
         # 读取 source_config 顶层 exclude_repos 或 cfg.exclude_repos
@@ -238,9 +239,9 @@ class APIFetcher(BaseFetcher):
 
         for repo in data.get("items", []):
             try:
-                updated = datetime.strptime(repo["updated_at"], "%Y-%m-%dT%H:%M:%SZ")
+                updated = datetime.strptime(repo["updated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             except Exception:
-                updated = datetime.now()
+                updated = datetime.now(timezone.utc)
             if updated < cutoff:
                 continue
 
@@ -522,7 +523,9 @@ class EpointFetcher(BaseFetcher):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=25, verify=False, headers=headers) as client:
+            from core.settings import get_settings
+            verify_tls = get_settings().epoint_verify_tls
+            async with httpx.AsyncClient(timeout=25, verify=verify_tls, headers=headers) as client:
                 resp = await client.post(api_url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
@@ -604,7 +607,7 @@ class BrowserFetcher(BaseFetcher):
 
     async def fetch(self, source_config: dict) -> List[NewsItem]:
         url = source_config.get("url", "").replace(
-            "{today}", datetime.now().strftime("%Y-%m-%d"))
+            "{today}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
         if not url:
             return []
         cfg = source_config.get("config") or {}
@@ -653,7 +656,7 @@ class BrowserFetcher(BaseFetcher):
                 title=title[:150],
                 url=self.DETAIL_URL.format(uuid=uuid),
                 source=source_config.get("name", ""),
-                pub_date=date_m.group(1) if date_m else datetime.now().strftime("%Y-%m-%d"),
+                pub_date=date_m.group(1) if date_m else datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                 content="",
                 source_code=source_config.get("code", ""),
                 industry_code=source_config.get("industry", ""),

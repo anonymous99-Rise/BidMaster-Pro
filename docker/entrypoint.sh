@@ -74,5 +74,18 @@ if [ -n "$BMP_MINIO_ENDPOINT" ]; then
 fi
 wait_for "$minio_host" "$minio_port" "MinIO" || echo "[entrypoint] MinIO 不可达，以降级模式继续"
 
+# ── 安全检查: 拒绝以默认凭证组合启动 (infra 内置 MinIO 场景) ──
+# 仅在未显式关闭检查时执行; 外部 MinIO 自行保证凭证安全
+if [ "${SKIP_DEFAULT_CRED_CHECK:-false}" != "true" ]; then
+  if [ "${BMP_MINIO_ACCESS_KEY:-}" = "minioadmin" ] || [ "${BMP_MINIO_SECRET_KEY:-}" = "minioadmin" ]; then
+    if [ "${BMP_DEBUG:-false}" != "true" ]; then
+      echo "[entrypoint] 检测到 MinIO 使用默认凭证 minioadmin, 生产环境禁止启动。"
+      echo "[entrypoint] 请在 .env 中设置 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD 后重试,"
+      echo "[entrypoint] 或设 BMP_DEBUG=true (开发) / SKIP_DEFAULT_CRED_CHECK=true (明确跳过)。"
+      exit 1
+    fi
+  fi
+fi
+
 echo "[entrypoint] 所有依赖就绪，启动主进程：$@"
 exec "$@"

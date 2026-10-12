@@ -5,11 +5,17 @@ import sqlalchemy as sql
 from sqlalchemy import Column, String, Integer, Float, Boolean, Text, DateTime, ForeignKey, Enum, JSON, UniqueConstraint
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import DeclarativeBase, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 # 跨方言大文本：MySQL 渲染为 MEDIUMTEXT(16MB)，PostgreSQL 等回退为 Text
 LONGTEXT = Text().with_variant(MEDIUMTEXT(), "mysql")
+
+
+def _utcnow() -> datetime:
+    # timezone-aware UTC (py3.12 起 naive datetime.utcnow 已弃用; DB 时区为 UTC,
+    # asyncpg 写入 aware datetime 自动截断 tz 保留 UTC 值, 与存量 naive 数据兼容)
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
@@ -80,8 +86,8 @@ class User(Base):
     role = Column(String(20), default=UserRole.WRITER.value)
     avatar = Column(String(500), nullable=True)
     password_hash = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     projects = relationship("Project", back_populates="user")
 
@@ -95,8 +101,8 @@ class Project(Base):
     status = Column(String(50), default=ProjectStatus.CREATED.value, index=True)
     tender_doc_id = Column(String(36), ForeignKey("documents.id"), nullable=True)
     config = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     user = relationship("User", back_populates="projects")
     documents = relationship("Document", back_populates="project", foreign_keys="Document.project_id")
@@ -117,7 +123,7 @@ class Document(Base):
     file_size = Column(Integer, nullable=True)
     parsed_content = Column(LONGTEXT, nullable=True)
     doc_metadata = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     project = relationship("Project", back_populates="documents", foreign_keys=[project_id])
 
@@ -131,8 +137,8 @@ class Analysis(Base):
     scoring_matrix = Column(JSON, default=dict)
     risk_flags = Column(JSON, default=dict)
     sections = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     project = relationship("Project", back_populates="analysis")
 
@@ -146,8 +152,8 @@ class Outline(Base):
     tree = Column(JSON, default=dict)
     score_mapping = Column(JSON, default=dict)
     reviewed = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     project = relationship("Project", back_populates="outline")
 
@@ -164,8 +170,8 @@ class Chapter(Base):
     status = Column(String(20), default="pending")
     word_count = Column(Integer, default=0)
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     project = relationship("Project", back_populates="chapters")
 
@@ -179,7 +185,7 @@ class CheckReport(Base):
     results = Column(JSON, default=dict)
     risk_level = Column(String(20), default="low")
     summary = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     project = relationship("Project", back_populates="check_reports")
 
@@ -193,7 +199,7 @@ class SkillConfig(Base):
     version = Column(String(20), default="1.0.0")
     config = Column(JSON, default=dict)
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class AgentConfig(Base):
@@ -205,7 +211,7 @@ class AgentConfig(Base):
     skills = Column(JSON, default=list)
     config = Column(JSON, default=dict)
     enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class CompanyProfile(Base):
@@ -227,7 +233,7 @@ class CompanyProfile(Base):
     id = Column(String(36), primary_key=True, default=_uuid_default)
     name = Column(String(100), unique=True, nullable=False, default="default")
     profile_data = Column(JSON, default=dict)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class Notification(Base):
@@ -239,7 +245,7 @@ class Notification(Base):
     content = Column(Text, nullable=False)
     status = Column(String(20), default="pending")
     sent_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KnowledgeBase(Base):
@@ -250,7 +256,7 @@ class KnowledgeBase(Base):
     doc_count = Column(Integer, default=0)
     embedding_model = Column(String(100), default="text-embedding-v3")
     collection_name = Column(String(200), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class MonitoringTask(Base):
@@ -266,7 +272,7 @@ class MonitoringTask(Base):
     interval_minutes = Column(Integer, default=60)
     enabled = Column(Boolean, default=True)
     last_run_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class CrawlResult(Base):
@@ -284,7 +290,7 @@ class CrawlResult(Base):
     category = Column(String(50), default="general")
     is_hot = Column(Boolean, default=False)
     hot_score = Column(Float, default=0.0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class RBACRole(Base):
@@ -295,7 +301,7 @@ class RBACRole(Base):
     display_name = Column(String(200), nullable=False)
     description = Column(Text, default="")
     is_system = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class RBACPermission(Base):
@@ -306,7 +312,7 @@ class RBACPermission(Base):
     name = Column(String(200), nullable=False)
     category = Column(String(100), nullable=False)
     description = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class RBACUserRole(Base):
@@ -315,7 +321,7 @@ class RBACUserRole(Base):
     id = Column(String(36), primary_key=True, default=_uuid_default)
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     role_id = Column(String(36), ForeignKey("rbac_roles.id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("user_id", "role_id", name="uq_rbac_user_role"),
@@ -328,7 +334,7 @@ class RBACRolePermission(Base):
     id = Column(String(36), primary_key=True, default=_uuid_default)
     role_id = Column(String(36), ForeignKey("rbac_roles.id"), nullable=False, index=True)
     permission_id = Column(String(36), ForeignKey("rbac_permissions.id"), nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("role_id", "permission_id", name="uq_rbac_role_perm"),
@@ -358,8 +364,8 @@ class NewsSourceRegistry(Base):
     last_status = Column(String(20), default="")
     last_error = Column(Text, default="")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class HotspotItem(Base):
@@ -400,8 +406,8 @@ class HotspotItem(Base):
     # 多租户: 该商机归属哪家公司 (KB-M4, 单企业部署可留空)
     company_id = Column(String(36), default="", index=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class LLMProviderConfig(Base):
@@ -417,8 +423,8 @@ class LLMProviderConfig(Base):
     is_default = Column(Boolean, default=False, nullable=False, index=True)
     enabled = Column(Boolean, default=True, nullable=False)
     note = Column(String(256), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class ApiKey(Base):
@@ -444,8 +450,8 @@ class ApiKey(Base):
     expires_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
     note = Column(String(256), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class ApiKeyUsage(Base):
@@ -461,7 +467,7 @@ class ApiKeyUsage(Base):
     user_agent = Column(String(256), nullable=True)
     client_ip = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=_utcnow, index=True)
 
 
 # ==========================================================================
@@ -489,8 +495,8 @@ class KbCompany(Base):
     is_default = Column(Boolean, default=False, index=True)  # 单企业部署的默认空间
     extra = Column(JSON, default=dict)
     created_by = Column(String(36), default="")              # 创建者 user_id (弱关联)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbCertType(Base):
@@ -506,7 +512,7 @@ class KbCertType(Base):
     is_builtin = Column(Boolean, default=False, index=True)  # 内置不可删(仅可禁用)
     enabled = Column(Boolean, default=True, index=True)
     sort_order = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbFile(Base):
@@ -527,8 +533,8 @@ class KbFile(Base):
     page_count = Column(Integer, default=0)
     category = Column(String(30), default="", index=True)    # agent 分类到的子库
     error = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     __table_args__ = (
         UniqueConstraint("company_id", "sha256", name="uq_kb_file_company_sha"),
@@ -559,8 +565,8 @@ class KbCertificate(Base):
     source = Column(String(20), default="manual")            # manual/ocr/public_agent
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbPersonnel(Base):
@@ -583,8 +589,8 @@ class KbPersonnel(Base):
     source = Column(String(20), default="manual")
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbPersonnelCertificate(Base):
@@ -609,8 +615,8 @@ class KbPersonnelCertificate(Base):
     source = Column(String(20), default="manual")
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbAchievement(Base):
@@ -641,8 +647,12 @@ class KbAchievement(Base):
     source = Column(String(20), default="manual")            # manual/public_agent
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    __table_args__ = (
+        # 并发采集防重: 同公司同指纹唯一 (空指纹=手工录入不受限)
+        UniqueConstraint("company_id", "fingerprint", name="uq_kb_achievement_company_fp"),
+    )
 
 
 class KbFinancial(Base):
@@ -666,8 +676,8 @@ class KbFinancial(Base):
     source = Column(String(20), default="manual")
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbCredit(Base):
@@ -689,8 +699,8 @@ class KbCredit(Base):
     source = Column(String(20), default="manual")
     confidence = Column(Float, default=0.0)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
 class KbEdge(Base):
@@ -708,7 +718,7 @@ class KbEdge(Base):
     source = Column(String(20), default="agent_inferred")      # agent_inferred/manual/public_agent
     is_audited = Column(Boolean, default=False, index=True)
     extra = Column(JSON, default=dict)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbBuildTask(Base):
@@ -726,7 +736,7 @@ class KbBuildTask(Base):
     params = Column(JSON, default=dict)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbScreeningResult(Base):
@@ -747,7 +757,7 @@ class KbScreeningResult(Base):
     redlines = Column(JSON, default=list)                     # 产物②废标红线清单
     response_table = Column(JSON, default=list)               # 产物③响应表草稿
     error = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbScreeningCorrection(Base):
@@ -761,7 +771,7 @@ class KbScreeningCorrection(Base):
     original_verdict = Column(String(20), default="")          # 机器原判
     corrected_verdict = Column(String(20), nullable=False)     # matched/failed
     reason = Column(Text, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbAnalysisReport(Base):
@@ -779,7 +789,7 @@ class KbAnalysisReport(Base):
     error = Column(Text, default="")
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class KbCollectTask(Base):
@@ -802,4 +812,115 @@ class KbCollectTask(Base):
     params = Column(JSON, default=dict)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+# ==========================================================================
+# 规则库 + 解读产物 + 勾对证据链 + 文函模板 (设计文档第五章 6 表, KB-M6/M7 沉淀层)
+# 说明: 此前初筛用内存正则+JSON 快照替代, 现补齐持久化:
+#       rule/错误修正沉淀 → kb_screening_corrections 已承担 match_correction 职责
+# ==========================================================================
+
+
+class KbRule(Base):
+    """规则库 (可沉淀): 数值/红线/同义词/自定义规则, 错例修正可沉淀为 learned 规则。"""
+    __tablename__ = "kb_rules"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), default="", index=True)  # 空=全局
+    rule_type = Column(String(20), nullable=False, index=True)   # numeric/redline/synonym/custom
+    name = Column(String(200), nullable=False)                   # "注册资本要求"/"ISO体系同义词组"
+    pattern = Column(Text, default="")                           # numeric: 正则; redline: 描述; synonym: JSON
+    operator = Column(String(10), default="")                    # >=/<=/==/contains
+    threshold = Column(Float, nullable=True)
+    unit = Column(String(20), default="")                        # 万元/%/年
+    severity = Column(String(20), default="major", index=True)   # critical(废标)/major/minor
+    enabled = Column(Boolean, default=True, index=True)
+    source = Column(String(20), default="built_in", index=True)  # built_in/learned(错例沉淀)
+    hit_count = Column(Integer, default=0)                       # 命中统计(越用越准的依据)
+    last_hit_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class KbTenderRequirement(Base):
+    """招标文件解读产物 — 资格/商务要求 (来自 M5 解读, 供初筛真实条款来源)。"""
+    __tablename__ = "kb_tender_requirements"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), default="", index=True)
+    opportunity_id = Column(String(36), default="", index=True)  # 关联商机(HotspotItem.id)
+    project_id = Column(String(36), default="", index=True)      # 关联解读项目(Project.id)
+    req_type = Column(String(20), default="qualification", index=True)  # qualification/commercial/scoring/delivery/format
+    title = Column(String(500), default="")
+    content = Column(Text, default="")
+    mandatory = Column(Boolean, default=True)                    # true=必须(资格性), false=加分项
+    risk_level = Column(String(10), default="medium")            # high(含废标词)/medium/low
+    source_page = Column(String(50), default="")
+    confidence = Column(Float, default=0.0)
+    fingerprint = Column(String(64), default="", index=True)     # 内容指纹(与修正回流对接)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class KbScoringItem(Base):
+    """招标文件解读产物 — 评分项 (M5 scoring_table 结构化, 供 M7 得分关)。"""
+    __tablename__ = "kb_scoring_items"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    company_id = Column(String(36), ForeignKey("kb_companies.id"), default="", index=True)
+    opportunity_id = Column(String(36), default="", index=True)
+    parent_id = Column(String(36), default="")                   # 父评分项(层级)
+    title = Column(String(500), default="")
+    score = Column(Float, default=0.0)                           # 分值
+    min_score = Column(Float, default=0.0)
+    max_score = Column(Float, default=0.0)
+    criteria = Column(Text, default="")                          # 分档描述原文
+    scoring_method = Column(String(20), default="objective")     # objective/subjective/price
+    coverage_status = Column(String(20), default="uncovered", index=True)  # uncovered/partial/covered
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class KbMatchResult(Base):
+    """初筛勾对结果 — 逐条要求 × 逐候选证据 (持久化此前仅存 JSON 快照的 items)。"""
+    __tablename__ = "kb_match_results"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    screening_id = Column(String(36), ForeignKey("kb_screening_results.id"), nullable=False, index=True)
+    requirement_id = Column(String(36), default="")              # kb_tender_requirements.id (可为空=临时条款)
+    fingerprint = Column(String(64), default="", index=True)     # 条款指纹(对接修正回流)
+    status = Column(String(20), nullable=False, index=True)      # matched/failed/needs_review
+    reason = Column(Text, default="")
+    evidence_items = Column(JSON, default=list)                  # 证据矩阵快照
+    similarity_score = Column(Float, default=0.0)
+    confirmed_status = Column(String(20), default="")            # 人工确认(可推翻机器判定)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class KbRequirementEvidenceLink(Base):
+    """要求 ↔ 证明材料证据链 (勾对报告的证据溯源底座)。"""
+    __tablename__ = "kb_requirement_evidence_links"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    requirement_id = Column(String(36), nullable=False, index=True)   # kb_tender_requirements.id
+    match_result_id = Column(String(36), default="", index=True)      # kb_match_results.id
+    card_type = Column(String(20), default="")                   # certificate/credit/financial/achievement...
+    card_id = Column(String(36), default="")                     # 实体卡片 id
+    quote = Column(Text, default="")                             # 招标文件原文摘录
+    coverage_status = Column(String(20), default="uncovered")    # uncovered/partial/covered
+    human_confirmed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=_utcnow)
+
+
+class KbDocTemplate(Base):
+    """商务文函模板 (占位符渲染底座, 替代 docx 硬编码)。"""
+    __tablename__ = "kb_doc_templates"
+
+    id = Column(String(36), primary_key=True, default=_uuid_default)
+    name = Column(String(200), nullable=False)                   # "授权委托书"/"中小企业声明函"
+    category = Column(String(30), default="commitment", index=True)  # commitment/declaration/authorization/response_table/achievement_summary/personnel_table
+    placeholders = Column(JSON, default=list)                    # ["{{company_name}}", "{{legal_person}}"]
+    body = Column(LONGTEXT, default="")                          # 模板正文(占位符), 空=用内置硬编码
+    enabled = Column(Boolean, default=True, index=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)

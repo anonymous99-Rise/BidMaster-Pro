@@ -201,7 +201,7 @@ async def update_source_stats(
     latency_ms: int = 0,
 ) -> None:
     """更新源抓取统计"""
-    from datetime import datetime
+    from datetime import datetime, timezone
     result = await db.execute(
         select(NewsSourceRegistry).where(NewsSourceRegistry.code == code)
     )
@@ -209,7 +209,7 @@ async def update_source_stats(
     if not row:
         return
 
-    row.last_crawled_at = datetime.utcnow()
+    row.last_crawled_at = datetime.now(timezone.utc)
     row.last_status = "success" if success else "failed"
     row.last_error = error
     await db.flush()

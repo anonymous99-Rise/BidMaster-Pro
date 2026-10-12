@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -119,6 +119,15 @@ async def delete_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
 
 
 async def _save_crawl_results(db: AsyncSession, task_id: str, items: list[dict]):
+    """监控任务结果入库 — 与聚合线(HotspotAggregateSkill)同一套分类/评分逻辑。
+
+    分类: field_extractor.announce_type_from_title (tender/award/change/failed)
+    评分: scoring.BusinessValueScorer 五维加权 (0-100), is_hot 阈值 60
+    之前这里是内嵌硬编码关键词分类 + 0.4/0.6 加权, 与聚合线结果不一致。
+    """
+    from services.news.field_extractor import announce_type_from_title
+    from services.news.scoring import BusinessValueScorer
+
     for item in items:
         existing = await db.execute(
             select(CrawlResult).where(CrawlResult.url == item.get("url", ""))
@@ -127,21 +136,18 @@ async def _save_crawl_results(db: AsyncSession, task_id: str, items: list[dict])
             continue
 
         title = item.get("title", "")
-        hot_score = item.get("keyword_score", 0) * 0.4 + item.get("relevance_score", 0) * 0.6
-        is_hot = hot_score >= 0.5
+        try:
+            score = BusinessValueScorer.score(item)
+            hot_score = float(score.get("total", 0))
+        except Exception:
+            hot_score = 0.0
+        is_hot = hot_score >= 60.0
 
-        category = "general"
-        hot_keywords = ["紧急", "限时", "截止", "今日", "最新", "公告", "变更", "更正"]
-        biz_keywords = ["招标", "采购", "中标", "成交", "询价", "竞争性", "磋商", "邀请"]
-        for kw in hot_keywords:
-            if kw in title:
-                category = "hot"
-                break
-        if category == "general":
-            for kw in biz_keywords:
-                if kw in title:
-                    category = "business"
-                    break
+        announce = announce_type_from_title(title)
+        # CrawlResult.category 语义: hot(紧急/热点) / business(商机) / general
+        # 映射自公告类型: award(中标成交)算热点, 其余商机类都算 business
+        category = {"award": "hot", "tender": "business",
+                    "change": "business", "failed": "business"}.get(announce, "general")
 
         crawl_item = CrawlResult(
             task_id=task_id,
@@ -161,15 +167,12 @@ async def _save_crawl_results(db: AsyncSession, task_id: str, items: list[dict])
 
 
 @router.post("/tasks/{task_id}/run")
-async def run_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(MonitoringTask).where(MonitoringTask.id == task_id)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail="监控任务不存在")
+async def _crawl_and_save_task(task, db: AsyncSession, max_pages: int = 3) -> dict:
+    """单个监控任务: 解析 sites → 抓取 → 入库。
 
-    # 解析 sites: 兼容 code 列表 (4 步向导) 和 URL 列表 (旧格式), 逻辑与 refresh-hot 共用
+    run-monitor 与 refresh-hot 共用, 此前两边各维护一份 resolve+crawl+save。
+    返回 {success, error, count, errors, resolved, unresolved, skipped_api}。
+    """
     resolved = resolve_task_sites(task.sites)
     resolved_urls, unresolved, skipped_api = (
         resolved["urls"],
@@ -178,11 +181,11 @@ async def run_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
     )
     if unresolved:
         logger.warning(
-            f"监控任务 {task_id} 中 {len(unresolved)} 个 site 既不是合法 code 也不是 URL,已忽略: {unresolved[:5]}"
+            f"监控任务 {task.id} 中 {len(unresolved)} 个 site 既不是合法 code 也不是 URL,已忽略: {unresolved[:5]}"
         )
     if skipped_api:
         logger.info(
-            f"监控任务 {task_id} 跳过 {len(skipped_api)} 个 API 类型源 (应在聚合流程中使用): {skipped_api[:5]}"
+            f"监控任务 {task.id} 跳过 {len(skipped_api)} 个 API 类型源 (应在聚合流程中使用): {skipped_api[:5]}"
         )
 
     gateway = get_llm_gateway()
@@ -192,33 +195,54 @@ async def run_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
         db=db,
         llm=gateway,
         parameters={
-            "task_id": task_id,
+            "task_id": str(task.id),
             "keywords": task.keywords,
             "exclude_keywords": task.exclude_keywords,
             "must_contain_keywords": task.must_contain_keywords,
             "sites": resolved_urls,
-            "max_pages": 3,
+            "max_pages": max_pages,
         },
     )
     skill_result = await skill.safe_execute(ctx)
 
+    count = 0
     if skill_result.success:
-        task.last_run_at = datetime.now()
+        task.last_run_at = datetime.now(timezone.utc)
         items = skill_result.data.get("results", []) if skill_result.data else []
-        await _save_crawl_results(db, task_id, items)
+        await _save_crawl_results(db, str(task.id), items)
         await db.flush()
+        count = len(items)
 
-    # 提取抓取错误详情 (含 URL + 错误原因)
     crawl_errors = skill_result.data.get("errors", []) if skill_result.data else []
-
     return {
         "success": skill_result.success,
-        "data": skill_result.data,
         "error": skill_result.error,
-        "resolved_sites": len(resolved_urls),
-        "unresolved_sites": unresolved,
-        "skipped_api_sites": skipped_api,
-        "crawl_errors": crawl_errors,
+        "count": count,
+        "errors": crawl_errors,
+        "resolved": len(resolved_urls),
+        "unresolved": unresolved,
+        "skipped_api": skipped_api,
+    }
+
+
+@router.post("/tasks/{task_id}/run")
+async def run_monitor_task(task_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(MonitoringTask).where(MonitoringTask.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task:
+        raise HTTPException(status_code=404, detail="监控任务不存在")
+
+    r = await _crawl_and_save_task(task, db, max_pages=3)
+    return {
+        "success": r["success"],
+        "error": r["error"],
+        "resolved_sites": r["resolved"],
+        "unresolved_sites": r["unresolved"],
+        "skipped_api_sites": r["skipped_api"],
+        "crawl_errors": r["errors"],
+        "items_count": r["count"],
     }
 
 
@@ -441,50 +465,14 @@ async def refresh_today_hot(db: AsyncSession = Depends(get_db)):
     if not tasks:
         return {"success": True, "message": "没有启用的监控任务", "items_count": 0}
 
-    gateway = get_llm_gateway()
     total_new = 0
-
     for task in tasks:
         try:
-            from services.news.skills.news_crawler_skill import NewsCrawlerSkill
-
-            resolved = resolve_task_sites(task.sites)
-            sites = resolved["urls"]
-            if resolved["unresolved"]:
-                logger.warning(
-                    f"刷新任务 {task.id} 忽略非法 site: {resolved['unresolved'][:5]}"
-                )
-            if resolved["skipped_api"]:
-                logger.info(
-                    f"刷新任务 {task.id} 跳过 API 类型源: {resolved['skipped_api'][:5]}"
-                )
-
-            skill = NewsCrawlerSkill()
-            ctx = SkillContext(
-                project_id="",
-                db=db,
-                llm=gateway,
-                parameters={
-                    "task_id": str(task.id),
-                    "keywords": task.keywords,
-                    "exclude_keywords": task.exclude_keywords,
-                    "must_contain_keywords": task.must_contain_keywords,
-                    "sites": sites,
-                    "max_pages": 2,
-                },
-            )
-            skill_result = await skill.safe_execute(ctx)
-
-            if skill_result.success and skill_result.data:
-                items = skill_result.data.get("results", [])
-                await _save_crawl_results(db, str(task.id), items)
-                total_new += len(items)
-
-                task.last_run_at = datetime.now()
+            r = await _crawl_and_save_task(task, db, max_pages=2)
+            total_new += r["count"]
         except Exception:
+            logger.exception(f"刷新任务 {task.id} 失败")
             continue
-
-    await db.flush()
 
     return {
         "success": True,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ class KbPipeline:
         files = result.scalars().all()
         self.task.total_files = len(files)
         self.task.status = "running"
-        self.task.started_at = datetime.utcnow()
+        self.task.started_at = datetime.now(timezone.utc)
         await self.db.flush()
 
         created_entities = 0
@@ -212,7 +212,7 @@ class KbPipeline:
         self.task.processed_files = processed
         self.task.created_entities = created_entities
         self.task.created_edges = self.edge_count
-        self.task.finished_at = datetime.utcnow()
+        self.task.finished_at = datetime.now(timezone.utc)
         self.task.status = "done"
         await self.db.flush()
         return {
@@ -278,9 +278,82 @@ class KbPipeline:
         if isinstance(payload, dict) and isinstance(payload.get(category), dict):
             payload = payload[category]
         created = await self._create_card(kb_file, category, payload, confidence)
+        # 关联 agent (设计 W1): 建卡后按 同名/同项目/同持有人 猜关系边
+        if created:
+            await self._link_related(kb_file, category, payload)
         kb_file.parse_status = "parsed"
         await self.db.flush()
         return created
+
+    async def _link_related(self, kb_file, category: str, payload: dict) -> None:
+        """关联 agent: 跨子库猜边 (此前只有 personnel→holds→certificate 一类)。
+
+        规则(同项目名/同业主/同持有人), 每类边幂等(存在即跳过), 失败不影响主流程:
+        - achievement ↔ achievement: 同项目名/同合同号 → same_project
+        - achievement ↔ certificate: 业绩 extra.scope 命中证书名 → supported_by
+        - achievement ↔ personnel: 业绩持有人=人员名 → participated
+        - financial ↔ certificate: 同年审计报告 ↔ 证书(弱, 不建)
+        """
+        try:
+            if category == "achievement":
+                await self._link_achievement(kb_file, payload)
+        except Exception as e:
+            logger.warning(f"关联边推断失败(忽略): {e}")
+
+    async def _link_achievement(self, kb_file, payload: dict) -> None:
+        from sqlalchemy import select, and_
+        project_name = (payload.get("project_name") or "").strip()
+        client_name = (payload.get("client_name") or "").strip()
+        if not project_name:
+            return
+        # 本业绩卡片 (刚建, file_id 关联)
+        ach = (await self.db.execute(
+            select(KbAchievement).where(and_(
+                KbAchievement.company_id == self.company_id,
+                KbAchievement.file_ids.contains([str(kb_file.id)])),
+            ).order_by(KbAchievement.created_at.desc()).limit(1))
+        ).scalar_one_or_none()
+        if not ach:
+            return
+
+        # 1) 同项目名其他业绩 → same_project (跨源佐证)
+        others = (await self.db.execute(
+            select(KbAchievement).where(and_(
+                KbAchievement.company_id == self.company_id,
+                KbAchievement.id != ach.id,
+                KbAchievement.project_name == project_name))
+        )).scalars().all()
+        for other in others:
+            self._add_edge("achievement", str(ach.id), "same_project",
+                           "achievement", str(other.id), confidence=0.7)
+
+        # 2) 业绩业主/项目名命中的证书 → supported_by (资质支撑业绩)
+        certs = (await self.db.execute(
+            select(KbCertificate).where(and_(
+                KbCertificate.company_id == self.company_id,
+                KbCertificate.is_audited == True))  # noqa: E712
+        )).scalars().all()
+        scope_text = f"{project_name} {payload.get('project_scope') or ''} {payload.get('project_type') or ''}"
+        for cert in certs:
+            cname = (cert.name or "").strip()
+            if not cname:
+                continue
+            # 去空格后包含判定 (ISO9001质量管理体系 vs ISO9001 质量...)
+            if cname.replace(" ", "") and cname.replace(" ", "") in scope_text.replace(" ", ""):
+                self._add_edge("achievement", str(ach.id), "supported_by",
+                               "certificate", str(cert.id), confidence=0.5)
+
+        # 3) 人员参与: 项目经理/负责人字段命中人员名 → participated
+        holder = (payload.get("holder") or payload.get("project_manager") or "").strip()
+        if holder and len(holder) >= 2:
+            persons = (await self.db.execute(
+                select(KbPersonnel).where(and_(
+                    KbPersonnel.company_id == self.company_id,
+                    KbPersonnel.name == holder))
+            )).scalars().all()
+            for p in persons:
+                self._add_edge("personnel", str(p.id), "participated",
+                               "achievement", str(ach.id), confidence=0.5)
 
     async def _llm_extract(self, category: str, text: str):
         prompt = _LLM_STRUCTURE_PROMPT.format(
@@ -349,6 +422,7 @@ class KbPipeline:
                 issuing_authority=payload.get("issuing_authority", ""),
                 status=_compute_status(payload.get("expiry_date")),
                 raw_text=kb_file.extracted_text[:20000] if kb_file.extracted_text else None,
+                extra=payload.get("extra") or {},
                 is_audited=audited,
                 source=src,
                 confidence=confidence,

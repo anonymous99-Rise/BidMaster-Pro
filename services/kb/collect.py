@@ -26,6 +26,12 @@ from services.news.field_extractor import extract_region, extract_project_code
 
 logger = logging.getLogger(__name__)
 
+
+def _verify_tls() -> bool:
+    # 政采站点部分内网用自签证书, 由 settings 统一控制 (默认跳过校验)
+    from core.settings import get_settings
+    return get_settings().epoint_verify_tls
+
 _WS = re.compile(r"[\s ]+")
 # 机构名: 以常见机构后缀结尾, 允许括号/字母数字
 _ORG = (r"[一-龥A-Za-z0-9（）()]{2,40}?(?:公司|局|处|院|校|大学|学院|中学|小学|幼儿园|"
@@ -245,7 +251,7 @@ async def search_epoint(page_url: str, api_path: str, keyword: str,
     page_size = min(30, max_items)
     out: list[dict] = []
     try:
-        async with httpx.AsyncClient(timeout=timeout, verify=False, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=_verify_tls(), headers=headers) as client:
             pn = 0
             while len(out) < max_items:
                 payload = {
@@ -314,12 +320,12 @@ class KbCollectPipeline:
         self.max_per_source = max_per_source
 
     async def run(self) -> dict:
-        from datetime import datetime
+        from datetime import datetime, timezone
         from sqlalchemy import select
         from services.models import KbAchievement
 
         self.task.status = "running"
-        self.task.started_at = datetime.utcnow()
+        self.task.started_at = datetime.now(timezone.utc)
         await self.db.flush()
 
         sources = _load_epoint_sources(self.source_codes)
@@ -411,7 +417,16 @@ class KbCollectPipeline:
                            "source_code": code},
                 ))
                 created += 1
-            await self.db.flush()
+            try:
+                await self.db.flush()
+            except Exception as e:
+                # 并发采集同指纹撞 uq_kb_achievement_company_fp: 回滚本轮新增, 记为重复
+                # (内存 existing_fps 快照在并发任务间不可见, DB 唯一约束是最后防线)
+                await self.db.rollback()
+                logger.warning(f"采集入库撞唯一约束(并发重复), 已回滚: {e}")
+                dup += created
+                created = 0
+                break
 
         self.task.total_found = total_found
         self.task.parsed = parsed
@@ -419,8 +434,8 @@ class KbCollectPipeline:
         self.task.duplicated = dup
         self.task.source_codes = used_codes
         self.task.status = "done"
-        self.task.finished_at = datetime.utcnow()
-        await self.db.flush()
+        self.task.finished_at = datetime.now(timezone.utc)
+        await self.db.commit()
         return {
             "task_id": str(self.task.id),
             "sources": used_codes,

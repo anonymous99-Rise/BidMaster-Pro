@@ -52,8 +52,8 @@
 ## Celery 异步任务 `services/celery_app.py`
 
 - broker/backend：Redis（`BMP_REDIS_URL`）
-- **beat 定时**：每小时 `run_news_monitor`
-- **任务**：`run_news_monitor`（商机抓取）、`run_full_check`（批量检查）、`run_batch_format`（批量排版）——各自新建 event loop 运行异步代码
+- **beat 定时**：每小时 `run_news_monitor`、每日 `run_kb_expiry_scan`
+- **任务**：`run_news_monitor`（商机聚合）、`run_kb_pipeline`（W1 知识库构建）、`run_kb_collect`（W2 公开采集）、`run_kb_expiry_scan`（证书到期扫描）——各自新建 event loop 运行异步代码
 
 ## 依赖注入
 
