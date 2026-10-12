@@ -1202,7 +1202,9 @@ async def run_screening(
                 )).scalar_one_or_none()
                 if r is None:
                     pat, direction = _RULE_PATTERNS_FOR_RULES.get(rule_key, ("", 1))
-                    r = KbRule(rule_type="numeric", name=f"数值规则:{rule_key}",
+                    # company_id 挂当前公司: 列带 FK 指向 kb_companies, 空串会违反约束
+                    r = KbRule(company_id=company_id, rule_type="numeric",
+                               name=f"数值规则:{rule_key}",
                                pattern=pat,
                                operator=">=" if direction > 0 else "<=",
                                severity="critical", source="built_in")
@@ -1363,10 +1365,13 @@ async def list_rules(
 
 @router.post("/rules")
 async def create_rule(payload: RuleCreate, db: AsyncSession = Depends(get_db),
-                      principal: AuthPrincipal = Depends(require_any_auth)):
+                      principal: AuthPrincipal = Depends(require_any_auth),
+                      company_id: str = Query("", description="归属公司, 空则需显式传")):
     if payload.rule_type not in ("numeric", "redline", "synonym", "custom"):
         raise HTTPException(status_code=400, detail="rule_type 无效")
-    row = KbRule(rule_type=payload.rule_type, name=payload.name,
+    if not company_id:
+        raise HTTPException(status_code=400, detail="company_id 不能为空 (列带公司 FK)")
+    row = KbRule(company_id=company_id, rule_type=payload.rule_type, name=payload.name,
                  pattern=payload.pattern, operator=payload.operator,
                  threshold=payload.threshold, unit=payload.unit,
                  severity=payload.severity, enabled=payload.enabled,
