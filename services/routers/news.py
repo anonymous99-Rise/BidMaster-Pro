@@ -166,7 +166,6 @@ async def _save_crawl_results(db: AsyncSession, task_id: str, items: list[dict])
     await db.flush()
 
 
-@router.post("/tasks/{task_id}/run")
 async def _crawl_and_save_task(task, db: AsyncSession, max_pages: int = 3) -> dict:
     """单个监控任务: 解析 sites → 抓取 → 入库。
 
