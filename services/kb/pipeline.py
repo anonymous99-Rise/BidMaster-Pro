@@ -182,7 +182,7 @@ class KbPipeline:
         files = result.scalars().all()
         self.task.total_files = len(files)
         self.task.status = "running"
-        self.task.started_at = datetime.now(timezone.utc)
+        self.task.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self.db.flush()
 
         created_entities = 0
@@ -212,7 +212,7 @@ class KbPipeline:
         self.task.processed_files = processed
         self.task.created_entities = created_entities
         self.task.created_edges = self.edge_count
-        self.task.finished_at = datetime.now(timezone.utc)
+        self.task.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         self.task.status = "done"
         await self.db.flush()
         return {

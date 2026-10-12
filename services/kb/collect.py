@@ -325,7 +325,7 @@ class KbCollectPipeline:
         from services.models import KbAchievement
 
         self.task.status = "running"
-        self.task.started_at = datetime.now(timezone.utc)
+        self.task.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self.db.flush()
 
         sources = _load_epoint_sources(self.source_codes)
@@ -434,7 +434,7 @@ class KbCollectPipeline:
         self.task.duplicated = dup
         self.task.source_codes = used_codes
         self.task.status = "done"
-        self.task.finished_at = datetime.now(timezone.utc)
+        self.task.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self.db.commit()
         return {
             "task_id": str(self.task.id),

@@ -13,9 +13,9 @@ LONGTEXT = Text().with_variant(MEDIUMTEXT(), "mysql")
 
 
 def _utcnow() -> datetime:
-    # timezone-aware UTC (py3.12 起 naive datetime.utcnow 已弃用; DB 时区为 UTC,
-    # asyncpg 写入 aware datetime 自动截断 tz 保留 UTC 值, 与存量 naive 数据兼容)
-    return datetime.now(timezone.utc)
+    # naive UTC (列是 TIMESTAMP WITHOUT TIME ZONE, asyncpg 拒绝 aware datetime;
+    # py3.12 弃用 naive utcnow, 故用 now(timezone.utc).replace(tzinfo=None) 等价替代)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):

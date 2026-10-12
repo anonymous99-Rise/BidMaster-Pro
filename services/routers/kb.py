@@ -1209,7 +1209,7 @@ async def run_screening(
                     db.add(r)
                 rule_hits[rule_key] = r
             r.hit_count = (r.hit_count or 0) + 1
-            r.last_hit_at = datetime.now(timezone.utc)
+            r.last_hit_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     await db.commit()
     return {"success": True, "screening_id": str(row.id), "overall": result["overall"],

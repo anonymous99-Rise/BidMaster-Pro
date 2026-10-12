@@ -206,7 +206,7 @@ async def _crawl_and_save_task(task, db: AsyncSession, max_pages: int = 3) -> di
 
     count = 0
     if skill_result.success:
-        task.last_run_at = datetime.now(timezone.utc)
+        task.last_run_at = datetime.now(timezone.utc).replace(tzinfo=None)
         items = skill_result.data.get("results", []) if skill_result.data else []
         await _save_crawl_results(db, str(task.id), items)
         await db.flush()

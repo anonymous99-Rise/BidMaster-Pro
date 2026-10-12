@@ -209,7 +209,7 @@ async def update_source_stats(
     if not row:
         return
 
-    row.last_crawled_at = datetime.now(timezone.utc)
+    row.last_crawled_at = datetime.now(timezone.utc).replace(tzinfo=None)
     row.last_status = "success" if success else "failed"
     row.last_error = error
     await db.flush()
