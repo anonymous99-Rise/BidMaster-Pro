@@ -1348,7 +1348,9 @@ async def list_rules(
     db: AsyncSession = Depends(get_db),
     principal: AuthPrincipal = Depends(require_any_auth),
 ):
-    q = select(KbRule).where(or_(KbRule.company_id == company_id, KbRule.company_id == ""))
+    q = select(KbRule)
+    if company_id:
+        q = q.where(or_(KbRule.company_id == company_id, KbRule.company_id == ""))
     if rule_type:
         q = q.where(KbRule.rule_type == rule_type)
     q = q.order_by(KbRule.source, KbRule.hit_count.desc()).limit(500)
